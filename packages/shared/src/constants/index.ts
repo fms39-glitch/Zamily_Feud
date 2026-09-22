@@ -1,0 +1,5 @@
+export const BOARD_SIZE = 8;
+export const STRIKES_TO_STEAL = 3;
+export const FAST_MONEY_QUESTION_COUNT = 5;
+export const ROOM_CODE_LENGTH = 5;
+export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

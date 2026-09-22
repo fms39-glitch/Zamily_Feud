@@ -1,0 +1,22 @@
+{
+  "name": "zamily-feud",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w @zamily-feud/server",
+    "dev:web": "npm run dev -w @zamily-feud/web",
+    "build": "npm run build -w @zamily-feud/shared && npm run build -w @zamily-feud/server && npm run build -w @zamily-feud/web",
+    "test": "npm run test -w @zamily-feud/shared && npm run test -w @zamily-feud/server",
+    "typecheck": "npm run typecheck -w @zamily-feud/shared && npm run typecheck -w @zamily-feud/server && npm run typecheck -w @zamily-feud/web",
+    "lint": "npm run lint -w @zamily-feud/web"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
