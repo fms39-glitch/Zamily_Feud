@@ -18,10 +18,10 @@ const envSchema = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().default("claude-haiku-4-5"),
 
-  EMBEDDING_PROVIDER: z.string().default("openai"),
+  EMBEDDING_PROVIDER: z.string().default("local"),
   EMBEDDING_API_KEY: z.string().optional(),
-  EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
-  EMBEDDING_DIMENSION: z.coerce.number().int().positive().default(1536),
+  EMBEDDING_MODEL: z.string().default("Xenova/all-MiniLM-L6-v2"),
+  EMBEDDING_DIMENSION: z.coerce.number().int().positive().default(384),
 
   EXACT_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(1.0),
   FUZZY_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.82),
