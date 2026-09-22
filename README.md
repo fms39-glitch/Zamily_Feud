@@ -4,12 +4,20 @@ A real-time multiplayer party game inspired by Family Feud, designed to run alon
 
 ## Status
 
-**Phase 0 + Phase 1 complete** (foundation): monorepo scaffolding, shared types/events, an
-in-memory ephemeral room store, and a minimal Socket.io server + Next.js client that can
-create a room, join it by code, split players across two teams, and toggle ready state live.
+**Phase 0 + 1 (foundation) and Phase 2 (dataset) complete.**
+
+- Monorepo scaffolding, shared types/events, an in-memory ephemeral room store, and a
+  Socket.io server + Next.js client that can create a room, join it by code, split players
+  across two teams, and toggle ready state live.
+- Postgres/pgvector schema (`database/migrations/0001_init.sql`) and an idempotent import +
+  embedding pipeline for the question/answer dataset — see `docs/dataset.md` for the model
+  choice, thresholds, and how to run it once you have a Postgres/Supabase instance.
 
 Everything else in `docs/` describes where the project is going; only what's listed above
-actually runs today.
+actually runs today. Phase 2 was verified end-to-end against a throwaway local Postgres
+container (import, embed, and a scoped vector-similarity query all confirmed correct), but
+that container was torn down — you still need your own Postgres/Supabase instance and
+`DATABASE_URL` to run the dataset scripts yourself.
 
 ## Structure
 
