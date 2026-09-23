@@ -1,6 +1,6 @@
 import type { Server as HttpServer } from "node:http";
-import { Server } from "socket.io";
-import type { ClientToServerEvents, ServerToClientEvents } from "@zamily-feud/shared";
+import { Server, type Socket } from "socket.io";
+import type { ClientToServerEvents, ErrorPayload, RoomSession, ServerToClientEvents } from "@zamily-feud/shared";
 import type { AppConfig } from "../config/env.js";
 import { RoomError, RoomStore } from "../rooms/roomStore.js";
 
@@ -9,10 +9,34 @@ interface SocketData {
   playerId?: string;
 }
 
+type GameServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
+type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
+type Ack = (result: { ok: true } | ErrorPayload) => void;
+
 export function createSocketServer(httpServer: HttpServer, config: AppConfig, roomStore: RoomStore) {
-  const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>(httpServer, {
+  const io: GameServer = new Server(httpServer, {
     cors: { origin: config.CLIENT_ORIGIN },
   });
+
+  /** Runs a host-authoritative room mutation, acks ok/error, and broadcasts ROOM_UPDATED on success. */
+  function runMutation(io: GameServer, socket: GameSocket, ack: Ack, mutate: (roomId: string, requesterId: string) => RoomSession) {
+    const { roomId, playerId } = socket.data;
+    if (!roomId || !playerId) {
+      ack({ code: "NOT_IN_ROOM", message: "You are not in a room" });
+      return;
+    }
+    try {
+      const room = mutate(roomId, playerId);
+      ack({ ok: true });
+      io.to(roomId).emit("ROOM_UPDATED", { room });
+    } catch (err) {
+      if (err instanceof RoomError) {
+        ack({ code: err.code, message: err.message });
+      } else {
+        ack({ code: "UNKNOWN", message: "Something went wrong" });
+      }
+    }
+  }
 
   io.on("connection", (socket) => {
     socket.on("ROOM_CREATE", (payload, ack) => {
@@ -60,6 +84,26 @@ export function createSocketServer(httpServer: HttpServer, config: AppConfig, ro
       player.ready = payload.ready;
       roomStore.touch(roomId);
       io.to(roomId).emit("ROOM_UPDATED", { room });
+    });
+
+    socket.on("TEAM_AUTO_BALANCE", (_payload, ack) => {
+      runMutation(io, socket, ack, (roomId, requesterId) => roomStore.autoBalanceTeams(roomId, requesterId));
+    });
+
+    socket.on("TEAM_ASSIGN", (payload, ack) => {
+      runMutation(io, socket, ack, (roomId, requesterId) =>
+        roomStore.assignPlayerToTeam(roomId, requesterId, payload.playerId, payload.teamId),
+      );
+    });
+
+    socket.on("TEAM_RENAME", (payload, ack) => {
+      runMutation(io, socket, ack, (roomId, requesterId) =>
+        roomStore.renameTeam(roomId, requesterId, payload.teamId, payload.name),
+      );
+    });
+
+    socket.on("LOCK_TEAMS", (_payload, ack) => {
+      runMutation(io, socket, ack, (roomId, requesterId) => roomStore.lockTeams(roomId, requesterId));
     });
 
     socket.on("disconnect", () => {

@@ -31,6 +31,17 @@ export interface SubmitStealPayload {
   answer: string;
 }
 
+export interface TeamAssignPayload {
+  playerId: string;
+  /** null moves the player back to the unassigned pool. */
+  teamId: string | null;
+}
+
+export interface TeamRenamePayload {
+  teamId: string;
+  name: string;
+}
+
 /** Server → Client payloads */
 export interface RoomUpdatedPayload {
   room: RoomSession;
@@ -45,6 +56,10 @@ export interface ClientToServerEvents {
   ROOM_CREATE: (payload: RoomCreatePayload, ack: (result: { roomId: string; roomCode: string; playerId: string } | ErrorPayload) => void) => void;
   ROOM_JOIN: (payload: RoomJoinPayload, ack: (result: { roomId: string; playerId: string } | ErrorPayload) => void) => void;
   PLAYER_READY: (payload: PlayerReadyPayload) => void;
+  TEAM_AUTO_BALANCE: (payload: Record<string, never>, ack: (result: { ok: true } | ErrorPayload) => void) => void;
+  TEAM_ASSIGN: (payload: TeamAssignPayload, ack: (result: { ok: true } | ErrorPayload) => void) => void;
+  TEAM_RENAME: (payload: TeamRenamePayload, ack: (result: { ok: true } | ErrorPayload) => void) => void;
+  LOCK_TEAMS: (payload: Record<string, never>, ack: (result: { ok: true } | ErrorPayload) => void) => void;
   BUZZ: (payload: BuzzPayload) => void;
   SUBMIT_ANSWER: (payload: SubmitAnswerPayload) => void;
   CHOOSE_PLAY: (payload: Record<string, never>) => void;

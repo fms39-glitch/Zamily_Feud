@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH } from "@zamily-feud/shared";
+import { MAX_PLAYERS_PER_TEAM, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, TEAM_IDS } from "@zamily-feud/shared";
 import type { PlayerState, RoomSession, TeamState } from "@zamily-feud/shared";
 
 export class RoomError extends Error {
@@ -8,7 +8,8 @@ export class RoomError extends Error {
   }
 }
 
-const MAX_PLAYERS_PER_TEAM = 5;
+const MAX_PLAYERS_TOTAL = MAX_PLAYERS_PER_TEAM * TEAM_IDS.length;
+const MAX_TEAM_NAME_LENGTH = 24;
 
 function generateRoomCode(): string {
   let code = "";
@@ -22,10 +23,25 @@ function emptyTeam(id: string, name: string): TeamState {
   return { id, name, playerIds: [], captainId: null, score: 0, strikes: 0 };
 }
 
+function requireHost(room: RoomSession, requesterId: string): void {
+  if (room.hostId !== requesterId) {
+    throw new RoomError("NOT_HOST", "Only the host can do that");
+  }
+}
+
+/** Recomputes a team's captain after its membership changes: first player in the list, or none. */
+function recomputeCaptain(team: TeamState): void {
+  team.captainId = team.playerIds[0] ?? null;
+}
+
 /**
  * Holds all active game state in memory, keyed by roomId. Nothing here is
  * persisted — destroyRoom() is the only way rooms leave this store, and a
  * background sweep calls it automatically once a room goes idle past its TTL.
+ *
+ * Team format is fixed: exactly 2 teams, 5 players max each (spec: 10 total).
+ * Players start unassigned (teamId: null) and only move to a team via
+ * assignPlayerToTeam() or autoBalanceTeams() — both host-only.
  */
 export class RoomStore {
   private roomsById = new Map<string, RoomSession>();
@@ -39,12 +55,8 @@ export class RoomStore {
     }
 
     const playerId = randomUUID();
-    const teamA = emptyTeam("team-a", "Team A");
-    const teamB = emptyTeam("team-b", "Team B");
-    teamA.playerIds.push(playerId);
-    teamA.captainId = playerId;
-
-    const host: PlayerState = { id: playerId, displayName, teamId: teamA.id, connected: true, isHost: true, ready: false };
+    const teams = Object.fromEntries(TEAM_IDS.map((id, i) => [id, emptyTeam(id, `Team ${i + 1}`)]));
+    const host: PlayerState = { id: playerId, displayName, teamId: null, connected: true, isHost: true, ready: false };
 
     const now = Date.now();
     const room: RoomSession = {
@@ -52,9 +64,10 @@ export class RoomStore {
       roomCode,
       hostId: playerId,
       players: { [playerId]: host },
-      teams: { [teamA.id]: teamA, [teamB.id]: teamB },
+      teams,
       currentQuestionId: null,
       phase: "LOBBY",
+      teamsLocked: false,
       activePlayerId: null,
       controllingTeamId: null,
       board: { slots: [], currentTotal: 0 },
@@ -75,26 +88,115 @@ export class RoomStore {
     const room = this.roomsById.get(roomId);
     if (!room) throw new RoomError("ROOM_NOT_FOUND", `No room with code ${roomCode}`);
     if (room.phase !== "LOBBY") throw new RoomError("ROOM_IN_PROGRESS", "This game has already started");
-
-    const teamA = room.teams["team-a"];
-    const teamB = room.teams["team-b"];
-    if (teamA.playerIds.length >= MAX_PLAYERS_PER_TEAM && teamB.playerIds.length >= MAX_PLAYERS_PER_TEAM) {
-      throw new RoomError("ROOM_FULL", "Both teams are full");
+    if (Object.keys(room.players).length >= MAX_PLAYERS_TOTAL) {
+      throw new RoomError("ROOM_FULL", "This room is full");
     }
-    const targetTeam = teamA.playerIds.length <= teamB.playerIds.length ? teamA : teamB;
 
     const playerId = randomUUID();
-    const player: PlayerState = { id: playerId, displayName, teamId: targetTeam.id, connected: true, isHost: false, ready: false };
+    const player: PlayerState = { id: playerId, displayName, teamId: null, connected: true, isHost: false, ready: false };
     room.players[playerId] = player;
-    targetTeam.playerIds.push(playerId);
-    if (!targetTeam.captainId) targetTeam.captainId = playerId;
 
     room.lastActivityAt = Date.now();
     return { room, playerId };
   }
 
+  /** Host-only. Moves a player onto a team (max 5) or back to the unassigned pool (teamId: null). */
+  assignPlayerToTeam(roomId: string, requesterId: string, playerId: string, teamId: string | null): RoomSession {
+    const room = this.getRoomOrThrow(roomId);
+    requireHost(room, requesterId);
+    if (room.teamsLocked) throw new RoomError("TEAMS_LOCKED", "Teams are already locked");
+
+    const player = room.players[playerId];
+    if (!player) throw new RoomError("PLAYER_NOT_FOUND", "No such player in this room");
+
+    if (teamId !== null) {
+      const targetTeam = room.teams[teamId];
+      if (!targetTeam) throw new RoomError("TEAM_NOT_FOUND", "No such team");
+      const alreadyOnTarget = targetTeam.playerIds.includes(playerId);
+      if (!alreadyOnTarget && targetTeam.playerIds.length >= MAX_PLAYERS_PER_TEAM) {
+        throw new RoomError("TEAM_FULL", `${targetTeam.name} is full`);
+      }
+    }
+
+    for (const team of Object.values(room.teams)) {
+      const idx = team.playerIds.indexOf(playerId);
+      if (idx !== -1) {
+        team.playerIds.splice(idx, 1);
+        recomputeCaptain(team);
+      }
+    }
+    if (teamId !== null) {
+      const targetTeam = room.teams[teamId];
+      targetTeam.playerIds.push(playerId);
+      recomputeCaptain(targetTeam);
+    }
+    player.teamId = teamId;
+
+    room.lastActivityAt = Date.now();
+    return room;
+  }
+
+  /** Host-only. Randomly redistributes every player 50/50 across the two teams. */
+  autoBalanceTeams(roomId: string, requesterId: string): RoomSession {
+    const room = this.getRoomOrThrow(roomId);
+    requireHost(room, requesterId);
+    if (room.teamsLocked) throw new RoomError("TEAMS_LOCKED", "Teams are already locked");
+
+    const teams = TEAM_IDS.map((id) => room.teams[id]);
+    const shuffled = Object.keys(room.players).sort(() => Math.random() - 0.5);
+
+    for (const team of teams) team.playerIds = [];
+    shuffled.forEach((playerId, index) => {
+      const team = teams[index % teams.length];
+      team.playerIds.push(playerId);
+      room.players[playerId].teamId = team.id;
+    });
+    for (const team of teams) recomputeCaptain(team);
+
+    room.lastActivityAt = Date.now();
+    return room;
+  }
+
+  /** Host-only. Renames a team (1-24 chars after trimming). */
+  renameTeam(roomId: string, requesterId: string, teamId: string, name: string): RoomSession {
+    const room = this.getRoomOrThrow(roomId);
+    requireHost(room, requesterId);
+    const team = room.teams[teamId];
+    if (!team) throw new RoomError("TEAM_NOT_FOUND", "No such team");
+
+    const trimmed = name.trim();
+    if (!trimmed) throw new RoomError("INVALID_NAME", "Team name cannot be blank");
+    team.name = trimmed.slice(0, MAX_TEAM_NAME_LENGTH);
+
+    room.lastActivityAt = Date.now();
+    return room;
+  }
+
+  /** Host-only. Closes the lobby: both teams must be non-empty. Advances phase to FACE_OFF. */
+  lockTeams(roomId: string, requesterId: string): RoomSession {
+    const room = this.getRoomOrThrow(roomId);
+    requireHost(room, requesterId);
+    if (room.phase !== "LOBBY") throw new RoomError("ALREADY_STARTED", "The game has already started");
+
+    const emptyTeams = Object.values(room.teams).filter((team) => team.playerIds.length === 0);
+    if (emptyTeams.length > 0) {
+      throw new RoomError("TEAM_EMPTY", `${emptyTeams.map((t) => t.name).join(", ")} needs at least one player`);
+    }
+
+    room.teamsLocked = true;
+    room.phase = "FACE_OFF";
+    room.lastActivityAt = Date.now();
+    return room;
+  }
+
   getRoom(roomId: string): RoomSession | undefined {
     return this.roomsById.get(roomId);
+  }
+
+  private getRoomOrThrow(roomId: string): RoomSession {
+    const room = this.roomsById.get(roomId);
+    if (!room) throw new RoomError("ROOM_NOT_FOUND", "No such room");
+    return room;
   }
 
   setPlayerConnected(roomId: string, playerId: string, connected: boolean): RoomSession | undefined {

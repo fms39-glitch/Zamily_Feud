@@ -16,7 +16,8 @@ export type GamePhase =
 export interface PlayerState {
   id: string;
   displayName: string;
-  teamId: string;
+  /** null = unassigned, sitting in the lobby pool until the host or auto-balance places them. */
+  teamId: string | null;
   connected: boolean;
   isHost: boolean;
   ready: boolean;
@@ -64,6 +65,7 @@ export interface RoomSession {
 
   currentQuestionId: string | null;
   phase: GamePhase;
+  teamsLocked: boolean;
 
   activePlayerId: string | null;
   controllingTeamId: string | null;

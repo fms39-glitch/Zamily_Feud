@@ -2,7 +2,60 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --board-navy-deep: #050b1f;
+  --board-navy: #0a1f4d;
+  --board-navy-light: #123166;
+  --board-dot: rgba(255, 255, 255, 0.18);
+  --tile-top: #7ec3ea;
+  --tile-bottom: #163d78;
+  --gold: #f4c430;
+}
+
 body {
-  background-color: #0f172a;
+  background-color: var(--board-navy-deep);
   color: #f1f5f9;
+}
+
+/* The classic Family Feud "egg-crate" dot texture, recreated in CSS rather than
+   a stretched screenshot so it stays crisp at any size. */
+.egg-crate-texture {
+  background-color: var(--board-navy);
+  background-image:
+    radial-gradient(circle at center, var(--board-dot) 0 3px, transparent 3px);
+  background-size: 26px 26px;
+}
+
+.board-oval {
+  border-radius: 50%;
+  box-shadow:
+    inset 0 0 0 6px var(--gold),
+    inset 0 0 40px rgba(0, 0, 0, 0.5),
+    0 0 60px rgba(244, 196, 48, 0.25);
+}
+
+.tile-face {
+  background: linear-gradient(180deg, var(--tile-top) 0%, var(--tile-bottom) 100%);
+  border: 2px solid #05132e;
+}
+
+.perspective-1000 {
+  perspective: 1200px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+.text-outline-navy {
+  -webkit-text-stroke: 2px var(--board-navy-deep);
+  paint-order: stroke fill;
 }
