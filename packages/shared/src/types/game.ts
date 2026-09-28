@@ -1,3 +1,5 @@
+import type { EvaluationResult } from "./matching.js";
+
 /** Explicit game state machine phases (spec §8). Transitions are server-only. */
 export type GamePhase =
   | "LOBBY"
@@ -46,6 +48,37 @@ export interface BoardState {
   currentTotal: number;
 }
 
+/** Host-only board view: answer text is always populated so the host can render it blurred pre-reveal. */
+export interface HostBoardSlot {
+  answerId: string;
+  answerText: string;
+  points: number;
+  rank: number;
+  revealed: boolean;
+}
+
+export interface HostBoardState {
+  questionId: string;
+  slots: HostBoardSlot[];
+}
+
+/** The matching engine's best guess at which board slot a submitted answer matches — never authoritative, the host decides. */
+export interface AnswerSuggestion extends EvaluationResult {
+  slotIndex: number | null;
+  /** True once confidence clears the auto-accept bar for its tier — still just a suggestion. */
+  autoAccept: boolean;
+}
+
+/** The most recent free-text answer submitted, broadcast so every client can see what was said. */
+export interface SubmissionBanner {
+  playerId: string;
+  teamId: string;
+  displayName: string;
+  text: string;
+  suggestion: AnswerSuggestion;
+  submittedAt: number;
+}
+
 /** Server-authoritative timer snapshot; clients render from this, never from local setInterval alone. */
 export interface TimerState {
   id: string | null;
@@ -64,6 +97,7 @@ export interface RoomSession {
   teams: Record<string, TeamState>;
 
   currentQuestionId: string | null;
+  questionText: string | null;
   phase: GamePhase;
   teamsLocked: boolean;
 
@@ -72,6 +106,8 @@ export interface RoomSession {
 
   board: BoardState;
   timer: TimerState;
+  /** null once resolved (host reveals/marks wrong, or a new question starts). */
+  lastSubmission: SubmissionBanner | null;
 
   createdAt: number;
   lastActivityAt: number;

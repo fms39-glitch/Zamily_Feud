@@ -60,6 +60,19 @@ const config: Config = {
           "0%, 100%": { textShadow: "0 0 10px rgba(244,196,48,0.6), 0 0 2px rgba(255,255,255,0.8)" },
           "50%": { textShadow: "0 0 22px rgba(244,196,48,0.95), 0 0 4px rgba(255,255,255,0.9)" },
         },
+        "match-glow": {
+          "0%": { boxShadow: "0 0 0 0 rgba(244,196,48,0)", transform: "scale(1)" },
+          "30%": { boxShadow: "0 0 45px 12px rgba(244,196,48,0.85)", transform: "scale(1.06)" },
+          "100%": { boxShadow: "0 0 0 0 rgba(244,196,48,0)", transform: "scale(1)" },
+        },
+        "buzzer-ready": {
+          "0%, 100%": { boxShadow: "0 0 0 0 rgba(244,196,48,0.55)" },
+          "50%": { boxShadow: "0 0 0 14px rgba(244,196,48,0)" },
+        },
+        "banner-in": {
+          "0%": { opacity: "0", transform: "translateY(-8px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
       },
       animation: {
         "title-reveal": "title-reveal 1.4s cubic-bezier(0.16,1,0.3,1) forwards",
@@ -69,6 +82,9 @@ const config: Config = {
         "strike-pop": "strike-pop 1.4s ease-out forwards",
         "screen-shake": "screen-shake 0.5s ease-in-out",
         "score-glow": "score-glow 2s ease-in-out infinite",
+        "match-glow": "match-glow 900ms ease-out",
+        "buzzer-ready": "buzzer-ready 1.6s ease-out infinite",
+        "banner-in": "banner-in 250ms ease-out",
       },
     },
   },

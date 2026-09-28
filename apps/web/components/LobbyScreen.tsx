@@ -30,14 +30,16 @@ function PlayerChip({
   currentColumn: string | null;
 }) {
   const player = room.players[playerId];
-  const destinations: { label: string; teamId: string | null }[] = [
-    { label: "Unassigned", teamId: null },
-    ...TEAM_IDS.map((id) => ({ label: room.teams[id].name, teamId: id })),
-  ].filter((d) => d.teamId !== currentColumn);
+  const destinations: { label: string; teamId: string | null }[] = player.isHost
+    ? []
+    : [
+        { label: "Unassigned", teamId: null },
+        ...TEAM_IDS.map((id) => ({ label: room.teams[id].name, teamId: id })),
+      ].filter((d) => d.teamId !== currentColumn);
 
   return (
     <div
-      draggable={isHost}
+      draggable={isHost && !player.isHost}
       onDragStart={(e) => e.dataTransfer.setData("text/player-id", playerId)}
       className={`rounded-lg border px-3 py-2 ${
         isHost ? "cursor-grab active:cursor-grabbing" : ""
@@ -200,7 +202,7 @@ export default function LobbyScreen({
         {error && <p className="mt-4 text-center text-red-400 text-sm">{error}</p>}
 
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          {self && (
+          {self && !isHost && (
             <button
               onClick={onToggleReady}
               className="rounded bg-navy-700 px-4 py-2 font-heading hover:bg-navy-600"

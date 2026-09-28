@@ -1,4 +1,9 @@
+import path from "node:path";
+import dotenv from "dotenv";
 import { z } from "zod";
+import { REPO_ROOT } from "./paths.js";
+
+dotenv.config({ path: path.join(REPO_ROOT, ".env") });
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),

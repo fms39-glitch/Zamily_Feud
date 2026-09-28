@@ -63,10 +63,16 @@ describe("RoomStore", () => {
 
     it("moves a player back to unassigned with teamId null", () => {
       const { room, playerId: hostId } = store.createRoom("Alice", 3600);
-      store.assignPlayerToTeam(room.roomId, hostId, hostId, "team-1");
-      const updated = store.assignPlayerToTeam(room.roomId, hostId, hostId, null);
-      expect(updated.players[hostId].teamId).toBeNull();
-      expect(updated.teams["team-1"].playerIds).not.toContain(hostId);
+      const { playerId: bobId } = store.joinRoom(room.roomCode, "Bob");
+      store.assignPlayerToTeam(room.roomId, hostId, bobId, "team-1");
+      const updated = store.assignPlayerToTeam(room.roomId, hostId, bobId, null);
+      expect(updated.players[bobId].teamId).toBeNull();
+      expect(updated.teams["team-1"].playerIds).not.toContain(bobId);
+    });
+
+    it("rejects assigning the host to a team", () => {
+      const { room, playerId: hostId } = store.createRoom("Alice", 3600);
+      expect(() => store.assignPlayerToTeam(room.roomId, hostId, hostId, "team-1")).toThrow(RoomError);
     });
 
     it("rejects assignment once a team already has 5 players", () => {
@@ -81,22 +87,24 @@ describe("RoomStore", () => {
 
     it("promotes the next player to captain when the captain leaves the team", () => {
       const { room, playerId: hostId } = store.createRoom("Alice", 3600);
+      const { playerId: aliceId } = store.joinRoom(room.roomCode, "Alice2");
       const { playerId: bobId } = store.joinRoom(room.roomCode, "Bob");
-      store.assignPlayerToTeam(room.roomId, hostId, hostId, "team-1");
+      store.assignPlayerToTeam(room.roomId, hostId, aliceId, "team-1");
       store.assignPlayerToTeam(room.roomId, hostId, bobId, "team-1");
-      const updated = store.assignPlayerToTeam(room.roomId, hostId, hostId, null);
+      const updated = store.assignPlayerToTeam(room.roomId, hostId, aliceId, null);
       expect(updated.teams["team-1"].captainId).toBe(bobId);
     });
   });
 
   describe("autoBalanceTeams", () => {
-    it("splits every player 50/50 across the two teams", () => {
+    it("splits every non-host player 50/50 across the two teams", () => {
       const { room, playerId: hostId } = store.createRoom("Alice", 3600);
-      for (let i = 0; i < 7; i++) store.joinRoom(room.roomCode, `P${i}`);
+      for (let i = 0; i < 8; i++) store.joinRoom(room.roomCode, `P${i}`);
       const updated = store.autoBalanceTeams(room.roomId, hostId);
       const sizes = [updated.teams["team-1"].playerIds.length, updated.teams["team-2"].playerIds.length];
       expect(sizes.sort()).toEqual([4, 4]);
-      expect(Object.values(updated.players).every((p) => p.teamId !== null)).toBe(true);
+      expect(updated.players[hostId].teamId).toBeNull();
+      expect(Object.values(updated.players).every((p) => p.isHost || p.teamId !== null)).toBe(true);
     });
 
     it("rejects a non-host caller", () => {
@@ -122,14 +130,16 @@ describe("RoomStore", () => {
   describe("lockTeams", () => {
     it("requires both teams to be non-empty", () => {
       const { room, playerId: hostId } = store.createRoom("Alice", 3600);
-      store.assignPlayerToTeam(room.roomId, hostId, hostId, "team-1");
+      const { playerId: bobId } = store.joinRoom(room.roomCode, "Bob");
+      store.assignPlayerToTeam(room.roomId, hostId, bobId, "team-1");
       expect(() => store.lockTeams(room.roomId, hostId)).toThrow(RoomError);
     });
 
     it("locks teams and advances the phase once both teams have a player", () => {
       const { room, playerId: hostId } = store.createRoom("Alice", 3600);
+      const { playerId: aliceId } = store.joinRoom(room.roomCode, "Alice2");
       const { playerId: bobId } = store.joinRoom(room.roomCode, "Bob");
-      store.assignPlayerToTeam(room.roomId, hostId, hostId, "team-1");
+      store.assignPlayerToTeam(room.roomId, hostId, aliceId, "team-1");
       store.assignPlayerToTeam(room.roomId, hostId, bobId, "team-2");
       const updated = store.lockTeams(room.roomId, hostId);
       expect(updated.teamsLocked).toBe(true);
@@ -138,8 +148,9 @@ describe("RoomStore", () => {
 
     it("rejects further team edits once locked", () => {
       const { room, playerId: hostId } = store.createRoom("Alice", 3600);
+      const { playerId: aliceId } = store.joinRoom(room.roomCode, "Alice2");
       const { playerId: bobId } = store.joinRoom(room.roomCode, "Bob");
-      store.assignPlayerToTeam(room.roomId, hostId, hostId, "team-1");
+      store.assignPlayerToTeam(room.roomId, hostId, aliceId, "team-1");
       store.assignPlayerToTeam(room.roomId, hostId, bobId, "team-2");
       store.lockTeams(room.roomId, hostId);
       expect(() => store.assignPlayerToTeam(room.roomId, hostId, bobId, "team-1")).toThrow(RoomError);

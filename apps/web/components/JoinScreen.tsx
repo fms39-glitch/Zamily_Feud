@@ -54,6 +54,7 @@ export default function JoinScreen({ onCreate, onJoin, onOpenRules, serverError 
               setDisplayName(e.target.value);
               if (nameError) setNameError(false);
             }}
+            suppressHydrationWarning
           />
           {nameError && <p className="mt-1 text-sm text-red-400">Name can&apos;t be blank.</p>}
         </div>
@@ -61,6 +62,7 @@ export default function JoinScreen({ onCreate, onJoin, onOpenRules, serverError 
         <button
           onClick={handleCreate}
           className="w-full rounded bg-gold-500 px-4 py-2 font-heading text-lg text-navy-950 hover:bg-gold-400 transition-colors"
+          suppressHydrationWarning
         >
           Create room
         </button>
@@ -71,10 +73,12 @@ export default function JoinScreen({ onCreate, onJoin, onOpenRules, serverError 
             placeholder="Room code"
             value={joinCode}
             onChange={(e) => setJoinCode(e.target.value)}
+            suppressHydrationWarning
           />
           <button
             onClick={handleJoin}
             className="rounded bg-navy-700 px-4 py-2 font-heading text-lg hover:bg-navy-600 transition-colors"
+            suppressHydrationWarning
           >
             Join
           </button>
@@ -82,7 +86,11 @@ export default function JoinScreen({ onCreate, onJoin, onOpenRules, serverError 
 
         {serverError && <p className="text-red-400 text-sm text-center">{serverError}</p>}
 
-        <button onClick={onOpenRules} className="w-full text-center text-sm text-slate-400 hover:text-gold-400 underline">
+        <button
+          onClick={onOpenRules}
+          className="w-full text-center text-sm text-slate-400 hover:text-gold-400 underline"
+          suppressHydrationWarning
+        >
           How to play
         </button>
       </div>

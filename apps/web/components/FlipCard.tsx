@@ -5,22 +5,24 @@ interface FlipCardProps {
   answer: string;
   points: number;
   revealed: boolean;
+  /** True for a moment right after this slot flips — plays the gold match glow. */
+  celebrate?: boolean;
   onClick?: () => void;
 }
 
 /** A classic Family Feud board slot: blank numbered face until it flips to reveal the answer + points. */
-export default function FlipCard({ number, answer, points, revealed, onClick }: FlipCardProps) {
+export default function FlipCard({ number, answer, points, revealed, celebrate, onClick }: FlipCardProps) {
   return (
     <button
       onClick={onClick}
-      disabled={revealed}
+      disabled={revealed || !onClick}
       className="perspective-1000 h-16 w-full text-left disabled:cursor-default"
       aria-label={revealed ? answer : `Slot ${number}, hidden`}
     >
       <div
-        className={`preserve-3d relative h-full w-full transition-transform duration-[600ms] ${
+        className={`preserve-3d relative h-full w-full rounded-md transition-transform duration-[600ms] ${
           revealed ? "rotate-y-180" : ""
-        }`}
+        } ${celebrate ? "animate-match-glow" : ""}`}
       >
         <div className="tile-face backface-hidden absolute inset-0 flex items-center rounded-md px-4">
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-navy-950 font-heading text-lg text-white">

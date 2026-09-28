@@ -1,54 +1,56 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { RoomSession } from "@zamily-feud/shared";
-import { TEAM_IDS } from "@zamily-feud/shared";
+import type { HostBoardState, RoomSession } from "@zamily-feud/shared";
 import { getSocket } from "../lib/socket";
 import JoinScreen from "../components/JoinScreen";
 import LobbyScreen from "../components/LobbyScreen";
 import RulesModal from "../components/RulesModal";
 import CinematicIntro from "../components/CinematicIntro";
-import GameBoardPreview from "../components/GameBoardPreview";
+import HostGameScreen from "../components/HostGameScreen";
+import PlayerGameScreen from "../components/PlayerGameScreen";
 
-function WaitingRoom({ room, onViewBoard }: { room: RoomSession; onViewBoard: () => void }) {
-  return (
-    <main className="egg-crate-texture min-h-screen flex flex-col items-center justify-center gap-6 p-6">
-      <h1 className="font-display text-4xl text-gold-500 tracking-wide">Teams locked!</h1>
-      <div className="flex gap-8">
-        {TEAM_IDS.map((id) => (
-          <div key={id} className="rounded-lg border border-navy-600 bg-navy-900/60 p-4">
-            <h2 className="font-heading text-xl mb-2">{room.teams[id].name}</h2>
-            <ul>
-              {room.teams[id].playerIds.map((pid) => (
-                <li key={pid}>{room.players[pid].displayName}</li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
-      <button onClick={onViewBoard} className="rounded bg-gold-500 px-6 py-2 font-heading text-navy-950 hover:bg-gold-400">
-        View board
-      </button>
-    </main>
-  );
-}
+const STRIKE_POPUP_MS = 1400;
+const CELEBRATE_MS = 900;
 
 export default function HomePage() {
   const [room, setRoom] = useState<RoomSession | null>(null);
+  const [hostBoard, setHostBoard] = useState<HostBoardState | null>(null);
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showRules, setShowRules] = useState(false);
   const [showIntro, setShowIntro] = useState(false);
-  const [showBoard, setShowBoard] = useState(false);
+  const [showStrike, setShowStrike] = useState(false);
+  const [justRevealedIndex, setJustRevealedIndex] = useState<number | null>(null);
   const prevPhase = useRef<string | null>(null);
 
   useEffect(() => {
     const socket = getSocket();
     socket.on("ROOM_UPDATED", ({ room }) => setRoom(room));
+    socket.on("HOST_BOARD_STATE", ({ board }) => setHostBoard(board));
     socket.on("ERROR", ({ message }) => setError(message));
+    socket.on("STRIKE", () => {
+      setShowStrike(true);
+      setTimeout(() => setShowStrike(false), STRIKE_POPUP_MS);
+    });
+    socket.on("SLOT_REVEALED", ({ slotIndex }) => {
+      setJustRevealedIndex(slotIndex);
+      setTimeout(() => setJustRevealedIndex((current) => (current === slotIndex ? null : current)), CELEBRATE_MS);
+    });
+    socket.on("connect_error", (err) => {
+      setError(`Can't reach the game server (${err.message}). Is it running?`);
+    });
+    socket.io.on("reconnect_failed", () => {
+      setError("Lost connection to the game server.");
+    });
     return () => {
       socket.off("ROOM_UPDATED");
+      socket.off("HOST_BOARD_STATE");
       socket.off("ERROR");
+      socket.off("STRIKE");
+      socket.off("SLOT_REVEALED");
+      socket.off("connect_error");
+      socket.io.off("reconnect_failed");
     };
   }, []);
 
@@ -59,6 +61,11 @@ export default function HomePage() {
     }
     prevPhase.current = room.phase;
   }, [room]);
+
+  function ack(result: { ok: true } | { code: string; message: string }) {
+    if ("code" in result) setError(result.message);
+    else setError(null);
+  }
 
   function handleCreate(displayName: string) {
     setError(null);
@@ -84,36 +91,88 @@ export default function HomePage() {
 
   function handleAutoBalance() {
     setError(null);
-    getSocket().emit("TEAM_AUTO_BALANCE", {}, (result) => {
-      if ("code" in result) setError(result.message);
-    });
+    getSocket().emit("TEAM_AUTO_BALANCE", {}, ack);
   }
 
   function handleAssign(targetPlayerId: string, teamId: string | null) {
     setError(null);
-    getSocket().emit("TEAM_ASSIGN", { playerId: targetPlayerId, teamId }, (result) => {
-      if ("code" in result) setError(result.message);
-    });
+    getSocket().emit("TEAM_ASSIGN", { playerId: targetPlayerId, teamId }, ack);
   }
 
   function handleRenameTeam(teamId: string, name: string) {
     setError(null);
-    getSocket().emit("TEAM_RENAME", { teamId, name }, (result) => {
-      if ("code" in result) setError(result.message);
-    });
+    getSocket().emit("TEAM_RENAME", { teamId, name }, ack);
   }
 
   function handleLockTeams() {
     setError(null);
-    getSocket().emit("LOCK_TEAMS", {}, (result) => {
-      if ("code" in result) setError(result.message);
-    });
+    getSocket().emit("LOCK_TEAMS", {}, ack);
   }
 
   function handleToggleReady() {
     if (!room || !playerId) return;
     const ready = !room.players[playerId]?.ready;
     getSocket().emit("PLAYER_READY", { ready });
+  }
+
+  function handleStartQuestion() {
+    setError(null);
+    getSocket().emit("HOST_START_QUESTION", {}, ack);
+  }
+
+  function handleReveal(slotIndex: number) {
+    setError(null);
+    getSocket().emit("HOST_REVEAL", { slotIndex }, ack);
+  }
+
+  function handleWrong() {
+    setError(null);
+    getSocket().emit("HOST_WRONG", {}, ack);
+  }
+
+  function handleReopenBuzz() {
+    setError(null);
+    getSocket().emit("HOST_REOPEN_BUZZ", {}, ack);
+  }
+
+  function handleAssignControl(teamId: string) {
+    setError(null);
+    getSocket().emit("HOST_ASSIGN_CONTROL", { teamId }, ack);
+  }
+
+  function handleAdvanceSteal() {
+    setError(null);
+    getSocket().emit("HOST_ADVANCE_STEAL", {}, ack);
+  }
+
+  function handleNextRound() {
+    setError(null);
+    getSocket().emit("HOST_NEXT_ROUND", {}, ack);
+  }
+
+  function handleEndGame() {
+    setError(null);
+    getSocket().emit("HOST_END_GAME", {}, ack);
+  }
+
+  function handleBuzz() {
+    setError(null);
+    getSocket().emit("BUZZ", { clientTimestamp: Date.now() }, ack);
+  }
+
+  function handleSubmitAnswer(answer: string) {
+    setError(null);
+    getSocket().emit("SUBMIT_ANSWER", { answer }, ack);
+  }
+
+  function handleChoosePlay() {
+    setError(null);
+    getSocket().emit("CHOOSE_PLAY", {}, ack);
+  }
+
+  function handleChoosePass() {
+    setError(null);
+    getSocket().emit("CHOOSE_PASS", {}, ack);
   }
 
   const rulesModal = showRules && <RulesModal onClose={() => setShowRules(false)} />;
@@ -147,18 +206,41 @@ export default function HomePage() {
   }
 
   if (showIntro) {
-    return <CinematicIntro onDone={() => { setShowIntro(false); setShowBoard(true); }} />;
+    return <CinematicIntro onDone={() => setShowIntro(false)} />;
   }
 
-  if (showBoard) {
+  const isHost = room.hostId === playerId;
+
+  if (isHost) {
     return (
-      <GameBoardPreview
-        team1Name={room.teams["team-1"].name}
-        team2Name={room.teams["team-2"].name}
-        onExit={() => setShowBoard(false)}
+      <HostGameScreen
+        room={room}
+        hostBoard={hostBoard}
+        showStrike={showStrike}
+        error={error}
+        onStartQuestion={handleStartQuestion}
+        onReveal={handleReveal}
+        onWrong={handleWrong}
+        onReopenBuzz={handleReopenBuzz}
+        onAssignControl={handleAssignControl}
+        onAdvanceSteal={handleAdvanceSteal}
+        onNextRound={handleNextRound}
+        onEndGame={handleEndGame}
       />
     );
   }
 
-  return <WaitingRoom room={room} onViewBoard={() => setShowBoard(true)} />;
+  return (
+    <PlayerGameScreen
+      room={room}
+      selfId={playerId}
+      justRevealedIndex={justRevealedIndex}
+      showStrike={showStrike}
+      error={error}
+      onBuzz={handleBuzz}
+      onSubmitAnswer={handleSubmitAnswer}
+      onChoosePlay={handleChoosePlay}
+      onChoosePass={handleChoosePass}
+    />
+  );
 }
