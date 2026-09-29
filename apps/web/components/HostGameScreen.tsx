@@ -49,7 +49,7 @@ export default function HostGameScreen({
     <main className="egg-crate-texture min-h-screen p-4 sm:p-8 flex flex-col items-center gap-6">
       <div className="w-full max-w-4xl flex items-center justify-between">
         <span className="rounded bg-navy-800 px-3 py-1 text-xs text-gold-400 border border-gold-500">
-          HOST VIEW — you manage the game, you don't play
+          HOST VIEW — you manage the game, you don&apos;t play
         </span>
         <span className="font-heading text-sm text-slate-400">
           Room code: <span className="text-gold-400 tracking-widest">{room.roomCode}</span>
@@ -152,7 +152,7 @@ export default function HostGameScreen({
 
         {room.phase === "CONTROL_DECISION" && room.controllingTeamId && (
           <p className="text-slate-300">
-            Waiting for <span className="text-gold-400">{room.teams[room.controllingTeamId].name}</span>'s captain to choose Play or Pass…
+            Waiting for <span className="text-gold-400">{room.teams[room.controllingTeamId].name}</span>&apos;s captain to choose Play or Pass…
           </p>
         )}
 
