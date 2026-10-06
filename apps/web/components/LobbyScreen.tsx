@@ -2,7 +2,12 @@
 
 import { useState } from "react";
 import type { RoomSession } from "@zamily-feud/shared";
-import { MAX_PLAYERS_PER_TEAM, TEAM_IDS } from "@zamily-feud/shared";
+import { HOST_PERSONAS, MAX_PLAYERS_PER_TEAM, TEAM_IDS } from "@zamily-feud/shared";
+import ChatPanel from "./ChatPanel";
+import { teamTheme } from "../lib/teamTheme";
+import Avatar from "./Avatar";
+import AvatarPicker from "./AvatarPicker";
+import type { TeamMic } from "../hooks/useTeamMic";
 
 interface LobbyScreenProps {
   room: RoomSession;
@@ -14,6 +19,9 @@ interface LobbyScreenProps {
   onToggleReady: () => void;
   onOpenRules: () => void;
   error: string | null;
+  mic: TeamMic;
+  onSendChat: (text: string) => void;
+  onSetAvatar: (image: string | null) => void;
 }
 
 function PlayerChip({
@@ -46,7 +54,10 @@ function PlayerChip({
       } ${player.connected ? "border-navy-600 bg-navy-800/80" : "border-navy-700 bg-navy-900/50 opacity-60"}`}
     >
       <div className="flex items-center gap-2">
-        <span className={player.connected ? "text-emerald-400" : "text-slate-500"}>●</span>
+        <span className="relative">
+          <Avatar playerId={player.id} name={player.displayName} teamId={player.teamId} size="sm" />
+          <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-navy-900 ${player.connected ? "bg-emerald-400" : "bg-slate-500"}`} />
+        </span>
         <span className="font-heading text-lg leading-none">{player.displayName}</span>
         {player.isHost && <span className="text-[10px] text-gold-400 font-bold">HOST</span>}
         {player.ready && <span className="text-[10px] text-emerald-400 font-bold">READY</span>}
@@ -107,8 +118,12 @@ function Column({
         const playerId = e.dataTransfer.getData("text/player-id");
         if (playerId) onDropPlayer(playerId, teamId);
       }}
-      className={`rounded-xl border-2 p-3 min-h-[220px] transition-colors ${
-        dragOver ? "border-gold-400 bg-navy-800/60" : "border-navy-700 bg-navy-900/40"
+      className={`min-h-[220px] rounded-2xl border-2 p-3 backdrop-blur-sm transition-all duration-300 ${
+        dragOver
+          ? "scale-[1.02] border-gold-400 bg-navy-800/70 shadow-[0_0_30px_rgba(244,196,48,0.35)]"
+          : teamId
+            ? `${teamTheme(teamId).border} border-opacity-60 bg-navy-900/60`
+            : "border-dashed border-navy-600 bg-navy-900/40"
       }`}
     >
       <div className="mb-2 flex items-center justify-between">
@@ -117,10 +132,10 @@ function Column({
             value={nameDraft}
             onChange={(e) => setNameDraft(e.target.value)}
             onBlur={() => nameDraft.trim() && onRenameTeam?.(nameDraft)}
-            className="font-heading text-xl bg-transparent border-b border-navy-600 focus:border-gold-500 outline-none"
+            className={`min-w-0 border-b border-navy-600 bg-transparent font-heading text-xl tracking-wide outline-none focus:border-gold-500 ${teamId ? teamTheme(teamId).text : ""}`}
           />
         ) : (
-          <h3 className="font-heading text-xl">{title}</h3>
+          <h3 className={`font-heading text-xl tracking-wide ${teamId ? teamTheme(teamId).text : "text-slate-300"}`}>{title}</h3>
         )}
         {capacity !== null && (
           <span className="text-xs text-slate-400">
@@ -148,8 +163,13 @@ export default function LobbyScreen({
   onToggleReady,
   onOpenRules,
   error,
+  mic,
+  onSendChat,
+  onSetAvatar,
 }: LobbyScreenProps) {
-  const isHost = room.hostId === selfId;
+  // The room creator manages teams in both modes; only a human host sits out of the teams.
+  const isHost = room.ownerId === selfId;
+  const isHumanHost = room.hostId === selfId;
   const unassignedIds = Object.values(room.players)
     .filter((p) => p.teamId === null)
     .map((p) => p.id);
@@ -157,19 +177,35 @@ export default function LobbyScreen({
   const self = room.players[selfId];
 
   return (
-    <main className="egg-crate-texture min-h-screen p-6">
-      <div className="mx-auto max-w-4xl">
+    <main className="egg-crate-texture relative min-h-screen overflow-x-hidden p-4 sm:p-6">
+      <div className="stage-lights animate-spotlight-drift" aria-hidden />
+      <div className="relative z-10 mx-auto max-w-4xl animate-rise-in">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="font-display text-4xl text-gold-500 tracking-wide">ZAMILY FEUD</h1>
+            <h1 className="text-metal-gold font-display text-4xl tracking-wide">ZAMILY FEUD</h1>
             <p className="text-slate-400">
-              Room code: <span className="font-heading text-2xl text-white tracking-widest">{room.roomCode}</span>
+              Room code:{" "}
+              <span className="rounded-lg border border-gold-500/50 bg-navy-950/70 px-2 font-heading text-2xl tracking-[0.3em] text-white">{room.roomCode}</span>
             </p>
           </div>
           <button onClick={onOpenRules} className="rounded border border-navy-600 px-3 py-1 text-sm hover:border-gold-500">
             How to play
           </button>
         </div>
+
+        {room.hostMode === "AI" && (
+          <div className="mb-4 rounded-lg border border-gold-500/60 bg-navy-900/70 px-4 py-2 text-sm text-slate-300">
+            <span className="font-heading tracking-widest text-gold-400">AI HOST</span> — an AI runs this game: questions, judging,
+            strikes, and the jokes ({HOST_PERSONAS.find((p) => p.id === room.hostPersona)?.label ?? "Family friendly"} style).
+            Everyone, including the room creator, plays on a team. Chat with the host below, or grab your team&apos;s mic once you&apos;re on a team.
+          </div>
+        )}
+
+        {self && (
+          <div className="mb-4 flex justify-center">
+            <AvatarPicker playerId={self.id} name={self.displayName} teamId={self.teamId} hasAvatar={self.hasAvatar} onSet={onSetAvatar} />
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Column
@@ -202,10 +238,10 @@ export default function LobbyScreen({
         {error && <p className="mt-4 text-center text-red-400 text-sm">{error}</p>}
 
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          {self && !isHost && (
+          {self && !isHumanHost && (
             <button
               onClick={onToggleReady}
-              className="rounded bg-navy-700 px-4 py-2 font-heading hover:bg-navy-600"
+              className="rounded-xl bg-gradient-to-b from-navy-600 to-navy-800 font-heading shadow-[0_4px_0_#050b1f] transition hover:brightness-110 active:translate-y-0.5 active:shadow-[0_1px_0_#050b1f] px-5 py-2"
             >
               {self.ready ? "Not ready" : "I'm ready"}
             </button>
@@ -214,20 +250,26 @@ export default function LobbyScreen({
             <>
               <button
                 onClick={onAutoBalance}
-                className="rounded bg-navy-700 px-4 py-2 font-heading hover:bg-navy-600"
+                className="rounded-xl bg-gradient-to-b from-navy-600 to-navy-800 font-heading shadow-[0_4px_0_#050b1f] transition hover:brightness-110 active:translate-y-0.5 active:shadow-[0_1px_0_#050b1f] px-5 py-2"
               >
                 Auto-Balance Teams
               </button>
               <button
                 onClick={onLockTeams}
                 disabled={!bothTeamsHavePlayers}
-                className="rounded bg-gold-500 px-6 py-2 font-heading text-navy-950 hover:bg-gold-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="rounded-xl bg-gradient-to-b from-gold-400 to-gold-600 font-heading text-navy-950 shadow-[0_4px_0_#8a6a05] transition hover:brightness-110 active:translate-y-0.5 active:shadow-[0_1px_0_#8a6a05] px-7 py-2 text-lg tracking-wide disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Lock Teams & Start Game
               </button>
             </>
           )}
         </div>
+
+        {room.hostMode === "AI" && (
+          <div className="mt-6 flex justify-center">
+            <ChatPanel room={room} selfId={selfId} mic={mic} onSend={onSendChat} />
+          </div>
+        )}
       </div>
     </main>
   );

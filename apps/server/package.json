@@ -15,6 +15,7 @@
     "dataset:validate": "tsx src/scripts/validateDataset.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@huggingface/transformers": "^3.3.3",
     "@zamily-feud/shared": "*",
     "cors": "^2.8.5",

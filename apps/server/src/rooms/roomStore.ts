@@ -1,14 +1,21 @@
 import { randomUUID } from "node:crypto";
 import {
+  AI_HOST_DEFAULT_ROUNDS,
+  AI_HOST_ID,
+  AVATAR_MAX_CHARS,
   ANSWER_WINDOW_MS,
+  CHAT_HISTORY_LIMIT,
+  CHAT_MAX_LENGTH,
   BUZZ_WINDOW_MS,
+  MAX_ANSWER_ALTERNATIVES,
+  QUESTION_INTRO_MS,
   MAX_PLAYERS_PER_TEAM,
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   STRIKES_TO_STEAL,
   TEAM_IDS,
 } from "@zamily-feud/shared";
-import type { HostBoardState, PlayerState, RoomSession, TeamState } from "@zamily-feud/shared";
+import type { AgeCategory, ChatMessage, HostBoardState, HostMode, PlayerState, RoomSession, TeamState } from "@zamily-feud/shared";
 import type { EmbeddingProvider } from "../providers/embedding/EmbeddingProvider.js";
 import type { QuestionSource } from "../dataset/questionSource.js";
 import { matchAnswer, type AnswerMatch, type MatchableAnswer, type MatchThresholds } from "../matching/matchAnswer.js";
@@ -21,6 +28,8 @@ interface RoundContext {
   /** The team that was playing the board before a steal — they bank on a failed steal. */
   boardOwnerTeamId: string | null;
   stealAttempted: boolean;
+  /** True while an accepted answer is still being matched (the embedding call can take seconds). */
+  matchingInProgress: boolean;
 }
 
 export interface RoomStoreDeps {
@@ -29,9 +38,25 @@ export interface RoomStoreDeps {
   thresholds?: MatchThresholds;
   /** How long the stealing team gets to confer before their one steal attempt. Defaults to 20s. */
   stealConferenceMs?: number;
+  /** Rounds per AI-hosted game (shown to players as "Round 2 of 5"). */
+  aiTotalRounds?: number;
+  /** AI rooms: how long a new question shows before the buzzer opens. 0 opens it immediately. */
+  questionIntroMs?: number;
 }
 
+const NO_TIMER = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 } as const;
+const AVATAR_PREFIX = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+
 const DEFAULT_THRESHOLDS: MatchThresholds = { fuzzy: 0.82, vectorAccept: 0.9, vectorReject: 0.6 };
+const MAX_ANSWER_LENGTH = 120;
+/** Minimum gap between one player's chat messages. */
+const CHAT_MIN_INTERVAL_MS = 700;
+
+/** Ranks match results: a confident match beats an unsure one, then the stronger method, then the higher similarity. */
+function matchStrength(m: AnswerMatch): number {
+  const method = { EXACT: 4, FUZZY: 3, VECTOR: 2, LLM: 1, NO_MATCH: 0 }[m.method];
+  return (m.autoAccept ? 100 : 0) + (m.matched ? 10 : 0) + method + (m.similarity ?? 0) / 10;
+}
 
 export class RoomError extends Error {
   constructor(public code: string, message: string) {
@@ -58,6 +83,18 @@ function requireHost(room: RoomSession, requesterId: string): void {
   if (room.hostId !== requesterId) {
     throw new RoomError("NOT_HOST", "Only the host can do that");
   }
+}
+
+/** Lobby setup (teams, names, lock) belongs to the room creator — who is also the host in HUMAN mode. */
+function requireOwner(room: RoomSession, requesterId: string): void {
+  if (room.ownerId !== requesterId) {
+    throw new RoomError("NOT_OWNER", "Only the room creator can do that");
+  }
+}
+
+export interface CreateRoomOptions {
+  hostMode?: HostMode;
+  hostPersona?: AgeCategory;
 }
 
 /** The team's face-off representative: whichever player is currently captain. */
@@ -96,10 +133,20 @@ export class RoomStore {
   private roomIdByCode = new Map<string, string>();
   private roundsByRoom = new Map<string, RoundContext>();
   private askedQuestionIdsByRoom = new Map<string, Set<string>>();
+  private lastChatAtByPlayer = new Map<string, number>();
+  private avatarsByRoom = new Map<string, Record<string, string>>();
+  /** `${roomId}:${teamId}` -> id of the current mic claim, so a stale auto-release can't drop a newer claim. */
+  private micClaimIds = new Map<string, string>();
 
   constructor(private deps: RoomStoreDeps = {}) {}
 
-  createRoom(displayName: string, ttlSeconds: number): { room: RoomSession; playerId: string } {
+  /**
+   * In AI mode the creator joins as a regular (team-eligible) player and the
+   * game is hosted by the virtual AI_HOST_ID, which only the server's AI host
+   * director acts as.
+   */
+  createRoom(displayName: string, ttlSeconds: number, options: CreateRoomOptions = {}): { room: RoomSession; playerId: string } {
+    const hostMode: HostMode = options.hostMode ?? "HUMAN";
     const roomId = randomUUID();
     let roomCode = generateRoomCode();
     while (this.roomIdByCode.has(roomCode)) {
@@ -108,17 +155,22 @@ export class RoomStore {
 
     const playerId = randomUUID();
     const teams = Object.fromEntries(TEAM_IDS.map((id, i) => [id, emptyTeam(id, `Team ${i + 1}`)]));
-    const host: PlayerState = { id: playerId, displayName, teamId: null, connected: true, isHost: true, ready: false };
+    const creator: PlayerState = { id: playerId, displayName, teamId: null, connected: true, isHost: hostMode === "HUMAN", ready: false, hasAvatar: false };
 
     const now = Date.now();
     const room: RoomSession = {
       roomId,
       roomCode,
-      hostId: playerId,
-      players: { [playerId]: host },
+      hostId: hostMode === "AI" ? AI_HOST_ID : playerId,
+      ownerId: playerId,
+      hostMode,
+      hostPersona: hostMode === "AI" ? options.hostPersona ?? "FAMILY_FRIENDLY" : null,
+      players: { [playerId]: creator },
       teams,
       currentQuestionId: null,
       questionText: null,
+      roundNumber: 0,
+      totalRounds: hostMode === "AI" ? this.deps.aiTotalRounds ?? AI_HOST_DEFAULT_ROUNDS : null,
       phase: "LOBBY",
       teamsLocked: false,
       activePlayerId: null,
@@ -126,6 +178,8 @@ export class RoomStore {
       board: { slots: [], currentTotal: 0 },
       timer: { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 },
       lastSubmission: null,
+      chat: [],
+      micHolders: Object.fromEntries(TEAM_IDS.map((id) => [id, null])),
       createdAt: now,
       lastActivityAt: now,
     };
@@ -147,17 +201,17 @@ export class RoomStore {
     }
 
     const playerId = randomUUID();
-    const player: PlayerState = { id: playerId, displayName, teamId: null, connected: true, isHost: false, ready: false };
+    const player: PlayerState = { id: playerId, displayName, teamId: null, connected: true, isHost: false, ready: false, hasAvatar: false };
     room.players[playerId] = player;
 
     room.lastActivityAt = Date.now();
     return { room, playerId };
   }
 
-  /** Host-only. Moves a player onto a team (max 5) or back to the unassigned pool (teamId: null). */
+  /** Owner-only. Moves a player onto a team (max 5) or back to the unassigned pool (teamId: null). */
   assignPlayerToTeam(roomId: string, requesterId: string, playerId: string, teamId: string | null): RoomSession {
     const room = this.getRoomOrThrow(roomId);
-    requireHost(room, requesterId);
+    requireOwner(room, requesterId);
     if (room.teamsLocked) throw new RoomError("TEAMS_LOCKED", "Teams are already locked");
 
     const player = room.players[playerId];
@@ -175,6 +229,7 @@ export class RoomStore {
       }
     }
 
+    this.dropMic(room, playerId);
     for (const team of Object.values(room.teams)) {
       const idx = team.playerIds.indexOf(playerId);
       if (idx !== -1) {
@@ -193,10 +248,10 @@ export class RoomStore {
     return room;
   }
 
-  /** Host-only. Randomly redistributes every player 50/50 across the two teams. */
+  /** Owner-only. Randomly redistributes every player 50/50 across the two teams. */
   autoBalanceTeams(roomId: string, requesterId: string): RoomSession {
     const room = this.getRoomOrThrow(roomId);
-    requireHost(room, requesterId);
+    requireOwner(room, requesterId);
     if (room.teamsLocked) throw new RoomError("TEAMS_LOCKED", "Teams are already locked");
 
     const teams = TEAM_IDS.map((id) => room.teams[id]);
@@ -206,6 +261,7 @@ export class RoomStore {
       .sort(() => Math.random() - 0.5);
 
     for (const team of teams) team.playerIds = [];
+    for (const id of shuffled) this.dropMic(room, id);
     shuffled.forEach((playerId, index) => {
       const team = teams[index % teams.length];
       team.playerIds.push(playerId);
@@ -217,10 +273,10 @@ export class RoomStore {
     return room;
   }
 
-  /** Host-only. Renames a team (1-24 chars after trimming). */
+  /** Owner-only. Renames a team (1-24 chars after trimming). */
   renameTeam(roomId: string, requesterId: string, teamId: string, name: string): RoomSession {
     const room = this.getRoomOrThrow(roomId);
-    requireHost(room, requesterId);
+    requireOwner(room, requesterId);
     const team = room.teams[teamId];
     if (!team) throw new RoomError("TEAM_NOT_FOUND", "No such team");
 
@@ -232,10 +288,10 @@ export class RoomStore {
     return room;
   }
 
-  /** Host-only. Closes the lobby: both teams must be non-empty. Advances phase to FACE_OFF. */
+  /** Owner-only. Closes the lobby: both teams must be non-empty. Advances phase to FACE_OFF. */
   lockTeams(roomId: string, requesterId: string): RoomSession {
     const room = this.getRoomOrThrow(roomId);
-    requireHost(room, requesterId);
+    requireOwner(room, requesterId);
     if (room.phase !== "LOBBY") throw new RoomError("ALREADY_STARTED", "The game has already started");
 
     const emptyTeams = Object.values(room.teams).filter((team) => team.playerIds.length === 0);
@@ -288,15 +344,21 @@ export class RoomStore {
 
     room.currentQuestionId = picked.id;
     room.questionText = picked.questionText;
+    room.roundNumber += 1;
     room.phase = "FACE_OFF";
     room.activePlayerId = null;
     room.controllingTeamId = null;
     room.board = {
-      slots: answers.map((a) => ({ answerId: a.answerId, answerText: null, points: a.points, rank: a.rank, revealed: false })),
+      slots: answers.map((a) => ({ answerId: a.answerId, answerText: null, points: a.points, rank: a.rank, revealed: false, missed: false })),
       currentTotal: 0,
     };
     room.lastSubmission = null;
-    room.timer = { id: randomUUID(), kind: "BUZZ", durationMs: BUZZ_WINDOW_MS, startedAt: Date.now(), remainingMs: BUZZ_WINDOW_MS };
+    // AI rooms give everyone a beat to read the question (and hear the host read it) before buzzing opens.
+    const introMs = room.hostMode === "AI" ? this.deps.questionIntroMs ?? QUESTION_INTRO_MS : 0;
+    room.timer =
+      introMs > 0
+        ? { id: randomUUID(), kind: "QUESTION_INTRO", durationMs: introMs, startedAt: Date.now(), remainingMs: introMs }
+        : { id: randomUUID(), kind: "BUZZ", durationMs: BUZZ_WINDOW_MS, startedAt: Date.now(), remainingMs: BUZZ_WINDOW_MS };
 
     this.roundsByRoom.set(roomId, {
       questionId: picked.id,
@@ -304,6 +366,7 @@ export class RoomStore {
       faceOffAttemptedTeamIds: new Set(),
       boardOwnerTeamId: null,
       stealAttempted: false,
+      matchingInProgress: false,
     });
 
     room.lastActivityAt = Date.now();
@@ -323,6 +386,7 @@ export class RoomStore {
         points: slot.points,
         rank: slot.rank,
         revealed: slot.revealed,
+        missed: slot.missed,
       })),
     };
   }
@@ -361,16 +425,32 @@ export class RoomStore {
    * FACE_OFF, any controlling-team member during PLAYING_BOARD, or the
    * (single-shot) stealing team during STEAL_CONFERENCE/STEAL_ATTEMPT.
    */
-  async submitAnswer(roomId: string, requesterId: string, rawText: string): Promise<RoomSession> {
+  async submitAnswer(roomId: string, requesterId: string, rawText: string, rawAlternatives: unknown = []): Promise<RoomSession> {
     const room = this.getRoomOrThrow(roomId);
     const round = this.roundsByRoom.get(roomId);
     if (!round) throw new RoomError("NO_ACTIVE_QUESTION", "No question is active");
 
-    const text = rawText.trim().slice(0, 120);
+    const text = rawText.trim().slice(0, MAX_ANSWER_LENGTH);
     if (!text) throw new RoomError("EMPTY_ANSWER", "Answer cannot be blank");
+    // Spoken answers carry speech-to-text's runner-up guesses; untrusted client input, so clean it hard.
+    const alternatives = Array.isArray(rawAlternatives)
+      ? [
+          ...new Set(
+            rawAlternatives
+              .filter((a): a is string => typeof a === "string")
+              .map((a) => a.trim().slice(0, MAX_ANSWER_LENGTH))
+              .filter((a) => a && a.toLowerCase() !== text.toLowerCase()),
+          ),
+        ].slice(0, MAX_ANSWER_ALTERNATIVES)
+      : [];
 
     const player = room.players[requesterId];
     if (!player || !player.teamId) throw new RoomError("NOT_ON_A_TEAM", "You are not on a team");
+    if (round.matchingInProgress) throw new RoomError("ANSWER_PENDING", "Someone just answered — hang on a second");
+    // A human host can glance at a replaced banner; the AI host judges each answer in turn, so don't overwrite one mid-judgment.
+    if (room.hostMode === "AI" && room.lastSubmission !== null) {
+      throw new RoomError("HOST_JUDGING", "Hold on — the host is still judging the last answer");
+    }
 
     if (room.phase === "FACE_OFF") {
       if (requesterId !== room.activePlayerId || room.timer.kind !== "ANSWER") {
@@ -390,11 +470,38 @@ export class RoomStore {
       throw new RoomError("WRONG_PHASE", "No answer is expected right now");
     }
 
+    // The answer is in: stop the face-off answer clock now, so a slow match (e.g. the
+    // embedding model's first load) can't time the player out after they answered in time.
+    const phaseAtSubmit = room.phase;
+    if (phaseAtSubmit === "FACE_OFF") {
+      room.timer = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 };
+    }
+
     const unrevealed = round.answers.map((a, index) => ({ a, index })).filter(({ index }) => !room.board.slots[index].revealed);
     const matchable: MatchableAnswer[] = unrevealed.map(({ a }) => a);
     const thresholds = this.deps.thresholds ?? DEFAULT_THRESHOLDS;
     const embed = this.deps.embeddingProvider ? (t: string) => this.embedOne(t) : undefined;
-    const match = await matchAnswer(text, matchable, thresholds, embed);
+    round.matchingInProgress = true;
+    let match: AnswerMatch;
+    let matchedOn = text;
+    try {
+      match = await matchAnswer(text, matchable, thresholds, embed);
+      // Only consult the runner-up transcripts when the main one isn't a confident hit (e.g. "dock" heard for "dog").
+      for (const alt of match.autoAccept ? [] : alternatives) {
+        const altMatch = await matchAnswer(alt, matchable, thresholds, embed);
+        if (matchStrength(altMatch) > matchStrength(match)) {
+          match = altMatch;
+          matchedOn = alt;
+        }
+      }
+    } finally {
+      round.matchingInProgress = false;
+    }
+    // The host may have moved the game on while we were matching; don't attach a verdict-in-waiting to a different moment.
+    const stillCurrent =
+      this.roundsByRoom.get(roomId) === round &&
+      (room.phase === phaseAtSubmit || (phaseAtSubmit === "STEAL_CONFERENCE" && room.phase === "STEAL_ATTEMPT"));
+    if (!stillCurrent) throw new RoomError("ANSWER_TOO_LATE", "The game moved on before that answer landed");
     const slotIndex = match.slotIndex !== null ? unrevealed[match.slotIndex].index : null;
 
     room.lastSubmission = {
@@ -402,13 +509,11 @@ export class RoomStore {
       teamId: player.teamId,
       displayName: player.displayName,
       text,
+      alternatives,
+      matchedOn,
       suggestion: { ...match, slotIndex },
       submittedAt: Date.now(),
     };
-
-    if (room.phase === "FACE_OFF") {
-      room.timer = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 };
-    }
 
     room.lastActivityAt = Date.now();
     return room;
@@ -429,6 +534,15 @@ export class RoomStore {
 
   private finishRound(room: RoomSession, winningTeamId: string | null): void {
     if (winningTeamId) room.teams[winningTeamId].score += room.board.currentTotal;
+    // Like the show: flip whatever nobody got, so everyone sees the full board (unscored).
+    const round = this.roundsByRoom.get(room.roomId);
+    room.board.slots.forEach((slot, i) => {
+      if (!slot.revealed && round) {
+        slot.answerText = round.answers[i].answerText;
+        slot.revealed = true;
+        slot.missed = true;
+      }
+    });
     room.phase = "ROUND_RESULT";
     room.activePlayerId = null;
     room.timer = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 };
@@ -456,7 +570,10 @@ export class RoomStore {
     room.board.currentTotal += slot.points;
     room.lastSubmission = null;
 
-    if (room.phase === "FACE_OFF") {
+    if (room.phase === "FACE_OFF" && room.board.slots.every((s) => s.revealed)) {
+      // Nothing left to play or pass (a one-answer board): the face-off winner banks it.
+      this.finishRound(room, room.controllingTeamId);
+    } else if (room.phase === "FACE_OFF") {
       room.phase = "CONTROL_DECISION";
       room.activePlayerId = null;
       room.timer = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 };
@@ -503,6 +620,16 @@ export class RoomStore {
     return room;
   }
 
+  /** Team IDs that have already used their face-off attempt on the current question. */
+  getFaceOffAttemptedTeamIds(roomId: string): string[] {
+    return Array.from(this.roundsByRoom.get(roomId)?.faceOffAttemptedTeamIds ?? []);
+  }
+
+  /** The team that will bank the board if a steal fails (the team that played it before the steal). */
+  getBoardOwnerTeamId(roomId: string): string | null {
+    return this.roundsByRoom.get(roomId)?.boardOwnerTeamId ?? null;
+  }
+
   /** Host-only. Re-opens the buzzer after a timeout with nobody locked in. */
   hostReopenBuzz(roomId: string, requesterId: string): RoomSession {
     const room = this.getRoomOrThrow(roomId);
@@ -539,6 +666,76 @@ export class RoomStore {
     room.timer = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 };
     room.lastActivityAt = Date.now();
     return room;
+  }
+
+  /** Any member of the stealing team can end the huddle early ("Discussion is done") and open their one steal attempt. */
+  endStealHuddle(roomId: string, requesterId: string): RoomSession {
+    const room = this.getRoomOrThrow(roomId);
+    if (room.phase !== "STEAL_CONFERENCE") throw new RoomError("WRONG_PHASE", "There's no steal huddle right now");
+    if (room.players[requesterId]?.teamId !== room.controllingTeamId) {
+      throw new RoomError("NOT_YOUR_HUDDLE", "Only the stealing team can end its huddle");
+    }
+    room.phase = "STEAL_ATTEMPT";
+    room.timer = { ...NO_TIMER };
+    room.lastActivityAt = Date.now();
+    return room;
+  }
+
+  /** True while the stealing team is conferring or answering — their discussion is private then. */
+  private isStealHuddle(room: RoomSession): boolean {
+    return room.phase === "STEAL_CONFERENCE" || room.phase === "STEAL_ATTEMPT";
+  }
+
+  /** The stealing team's private huddle chat. Returns the message and exactly who may receive it (their teammates). */
+  postTeamChat(roomId: string, playerId: string, rawText: string, via: "TEXT" | "VOICE" = "TEXT"): { message: ChatMessage; recipientIds: string[] } {
+    const room = this.getRoomOrThrow(roomId);
+    const player = room.players[playerId];
+    if (!player?.teamId) throw new RoomError("NOT_ON_A_TEAM", "You are not on a team");
+    if (!this.isStealHuddle(room) || player.teamId !== room.controllingTeamId) {
+      throw new RoomError("NO_HUDDLE", "Team chat is only open for the stealing team during a steal");
+    }
+    const text = rawText.trim().slice(0, CHAT_MAX_LENGTH);
+    if (!text) throw new RoomError("EMPTY_MESSAGE", "Message cannot be blank");
+    const key = `${roomId}:${playerId}`;
+    const now = Date.now();
+    if (now - (this.lastChatAtByPlayer.get(key) ?? 0) < CHAT_MIN_INTERVAL_MS) throw new RoomError("CHAT_TOO_FAST", "Slow down a little");
+    this.lastChatAtByPlayer.set(key, now);
+    room.lastActivityAt = now;
+    const message: ChatMessage = { id: randomUUID(), from: "PLAYER", playerId, displayName: player.displayName, teamId: player.teamId, text, via, at: now };
+    return { message, recipientIds: [...room.teams[player.teamId].playerIds] };
+  }
+
+  /** During a steal, may `fromId` stream mic audio to `toId`? The stealing team only talks among itself. */
+  canHearMic(roomId: string, fromId: string, toId: string): boolean {
+    const room = this.roomsById.get(roomId);
+    if (!room) return false;
+    const fromTeam = room.players[fromId]?.teamId;
+    if (room.phase === "STEAL_CONFERENCE" && fromTeam === room.controllingTeamId) return room.players[toId]?.teamId === fromTeam;
+    return true;
+  }
+
+  /** Sets or clears a player's picture. Only small image data URLs are accepted; they live in memory and die with the room. */
+  setAvatar(roomId: string, playerId: string, image: unknown): RoomSession {
+    const room = this.getRoomOrThrow(roomId);
+    const player = room.players[playerId];
+    if (!player) throw new RoomError("PLAYER_NOT_FOUND", "No such player in this room");
+    const avatars = this.avatarsByRoom.get(roomId) ?? {};
+    if (image === null) {
+      delete avatars[playerId];
+    } else {
+      if (typeof image !== "string" || image.length > AVATAR_MAX_CHARS || !AVATAR_PREFIX.test(image)) {
+        throw new RoomError("BAD_IMAGE", "That picture couldn't be used — try a smaller JPEG or PNG");
+      }
+      avatars[playerId] = image;
+    }
+    this.avatarsByRoom.set(roomId, avatars);
+    player.hasAvatar = image !== null;
+    room.lastActivityAt = Date.now();
+    return room;
+  }
+
+  getAvatars(roomId: string): Record<string, string> {
+    return { ...(this.avatarsByRoom.get(roomId) ?? {}) };
   }
 
   /** The controlling team's captain chooses to play the board themselves. */
@@ -614,7 +811,9 @@ export class RoomStore {
     const round = this.roundsByRoom.get(roomId);
     if (!room || !round || room.timer.id !== timerId) return null;
 
-    if (room.timer.kind === "BUZZ" && room.phase === "FACE_OFF" && room.activePlayerId === null) {
+    if (room.timer.kind === "QUESTION_INTRO" && room.phase === "FACE_OFF") {
+      room.timer = { id: randomUUID(), kind: "BUZZ", durationMs: BUZZ_WINDOW_MS, startedAt: Date.now(), remainingMs: BUZZ_WINDOW_MS };
+    } else if (room.timer.kind === "BUZZ" && room.phase === "FACE_OFF" && room.activePlayerId === null) {
       room.timer = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 };
     } else if (room.timer.kind === "ANSWER" && room.phase === "FACE_OFF") {
       this.resolveFaceOffMiss(room, round);
@@ -638,11 +837,95 @@ export class RoomStore {
     return room;
   }
 
+  // ---------------------------------------------------------------------
+  // Chat + talk-to-host mic (AI-host rooms). The mic is one per team: the
+  // holder's audio streams to the room over WebRTC (signaled by the socket
+  // layer) and their transcribed speech is posted here as VOICE chat.
+  // ---------------------------------------------------------------------
+
+  private pushChat(room: RoomSession, message: Omit<ChatMessage, "id" | "at">): ChatMessage {
+    const full: ChatMessage = { ...message, id: randomUUID(), at: Date.now() };
+    room.chat.push(full);
+    if (room.chat.length > CHAT_HISTORY_LIMIT) room.chat.splice(0, room.chat.length - CHAT_HISTORY_LIMIT);
+    room.lastActivityAt = Date.now();
+    return full;
+  }
+
+  /** Any player in an AI-host room may chat, in any phase. VOICE posts must come from their team's current mic holder. */
+  postPlayerChat(roomId: string, playerId: string, rawText: string, via: "TEXT" | "VOICE" = "TEXT"): { room: RoomSession; message: ChatMessage } {
+    const room = this.getRoomOrThrow(roomId);
+    if (room.hostMode !== "AI") throw new RoomError("NO_CHAT", "Chat is only available with the AI host");
+    const player = room.players[playerId];
+    if (!player) throw new RoomError("PLAYER_NOT_FOUND", "No such player in this room");
+    const text = rawText.trim().slice(0, CHAT_MAX_LENGTH);
+    if (!text) throw new RoomError("EMPTY_MESSAGE", "Message cannot be blank");
+    if (via === "VOICE" && (!player.teamId || room.micHolders[player.teamId] !== playerId)) {
+      throw new RoomError("NO_MIC", "You don't have your team's mic");
+    }
+    // The stealing team's spoken huddle stays private: it belongs in team chat, not the room.
+    if (via === "VOICE" && this.isStealHuddle(room) && player.teamId === room.controllingTeamId) {
+      throw new RoomError("USE_TEAM_CHAT", "Your team is huddling — that goes to team chat");
+    }
+    const key = `${roomId}:${playerId}`;
+    const now = Date.now();
+    if (now - (this.lastChatAtByPlayer.get(key) ?? 0) < CHAT_MIN_INTERVAL_MS) {
+      throw new RoomError("CHAT_TOO_FAST", "Slow down a little");
+    }
+    this.lastChatAtByPlayer.set(key, now);
+    const message = this.pushChat(room, { from: "PLAYER", playerId, displayName: player.displayName, teamId: player.teamId, text, via });
+    return { room, message };
+  }
+
+  /** The AI host's lines go into the chat too, so it reads as one conversation. */
+  postHostChat(roomId: string, text: string): ChatMessage | null {
+    const room = this.roomsById.get(roomId);
+    if (!room || !text.trim()) return null;
+    return this.pushChat(room, { from: "HOST", playerId: null, displayName: "AI Host", teamId: null, text: text.trim(), via: "TEXT" });
+  }
+
+  /** Takes the caller's team mic if it's free (re-claiming your own refreshes it). Returns a claim id for the auto-release. */
+  claimMic(roomId: string, playerId: string): { room: RoomSession; claimId: string } {
+    const room = this.getRoomOrThrow(roomId);
+    if (room.hostMode !== "AI") throw new RoomError("NO_MIC", "The talk-to-host mic is only available with the AI host");
+    const player = room.players[playerId];
+    if (!player?.teamId) throw new RoomError("NOT_ON_A_TEAM", "Join a team to use the mic");
+    const holder = room.micHolders[player.teamId];
+    if (holder && holder !== playerId) {
+      throw new RoomError("MIC_TAKEN", `${room.players[holder]?.displayName ?? "A teammate"} has your team's mic`);
+    }
+    room.micHolders[player.teamId] = playerId;
+    const claimId = randomUUID();
+    this.micClaimIds.set(`${roomId}:${player.teamId}`, claimId);
+    room.lastActivityAt = Date.now();
+    return { room, claimId };
+  }
+
+  /** Releases the caller's team mic if they hold it. With `claimId`, only that exact claim (used by the auto-release timeout). */
+  releaseMic(roomId: string, playerId: string, claimId?: string): RoomSession | null {
+    const room = this.roomsById.get(roomId);
+    const teamId = room?.players[playerId]?.teamId;
+    if (!room || !teamId || room.micHolders[teamId] !== playerId) return null;
+    if (claimId && this.micClaimIds.get(`${roomId}:${teamId}`) !== claimId) return null;
+    this.dropMic(room, playerId);
+    room.lastActivityAt = Date.now();
+    return room;
+  }
+
+  private dropMic(room: RoomSession, playerId: string): void {
+    for (const [teamId, holder] of Object.entries(room.micHolders)) {
+      if (holder === playerId) {
+        room.micHolders[teamId] = null;
+        this.micClaimIds.delete(`${room.roomId}:${teamId}`);
+      }
+    }
+  }
+
   setPlayerConnected(roomId: string, playerId: string, connected: boolean): RoomSession | undefined {
     const room = this.roomsById.get(roomId);
     const player = room?.players[playerId];
     if (!room || !player) return undefined;
     player.connected = connected;
+    if (!connected) this.dropMic(room, playerId);
     room.lastActivityAt = Date.now();
     return room;
   }
@@ -658,6 +941,15 @@ export class RoomStore {
     if (!room) return;
     this.roomIdByCode.delete(room.roomCode);
     this.roomsById.delete(roomId);
+    this.roundsByRoom.delete(roomId);
+    this.askedQuestionIdsByRoom.delete(roomId);
+    this.avatarsByRoom.delete(roomId);
+    for (const key of [...this.lastChatAtByPlayer.keys(), ...this.micClaimIds.keys()]) {
+      if (key.startsWith(`${roomId}:`)) {
+        this.lastChatAtByPlayer.delete(key);
+        this.micClaimIds.delete(key);
+      }
+    }
   }
 
   /** Destroys any room whose lastActivityAt is older than ttlSeconds. Returns destroyed room IDs. */

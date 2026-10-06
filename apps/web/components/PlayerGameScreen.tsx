@@ -1,13 +1,20 @@
 "use client";
 
-import type { RoomSession } from "@zamily-feud/shared";
+import type { ChatMessage, HostCommentary, RoomSession } from "@zamily-feud/shared";
+import StealHuddle from "./StealHuddle";
+import AiHostBubble from "./AiHostBubble";
+import ChatPanel from "./ChatPanel";
+import type { TeamMic } from "../hooks/useTeamMic";
 import FlipCard from "./FlipCard";
-import ScoreCounter from "./ScoreCounter";
+import GameBoard from "./GameBoard";
+import GameHeader from "./GameHeader";
+import FinalResults from "./FinalResults";
 import TimerBar from "./TimerBar";
 import BuzzerButton from "./BuzzerButton";
 import AnswerInput from "./AnswerInput";
 import SubmissionBannerView from "./SubmissionBannerView";
 import StrikePopup from "./StrikePopup";
+import { teamTheme } from "../lib/teamTheme";
 
 interface PlayerGameScreenProps {
   room: RoomSession;
@@ -15,10 +22,17 @@ interface PlayerGameScreenProps {
   justRevealedIndex: number | null;
   showStrike: boolean;
   error: string | null;
+  hostLine: HostCommentary | null;
+  mic: TeamMic;
+  onSendChat: (text: string) => void;
   onBuzz: () => void;
-  onSubmitAnswer: (text: string) => void;
+  onSubmitAnswer: (text: string, alternatives: string[]) => void;
   onChoosePlay: () => void;
   onChoosePass: () => void;
+  /** The stealing team's private huddle messages (empty for everyone else). */
+  teamChat: ChatMessage[];
+  onSendTeamChat: (text: string) => void;
+  onStealReady: () => void;
 }
 
 export default function PlayerGameScreen({
@@ -27,10 +41,16 @@ export default function PlayerGameScreen({
   justRevealedIndex,
   showStrike,
   error,
+  hostLine,
+  mic,
+  onSendChat,
   onBuzz,
   onSubmitAnswer,
   onChoosePlay,
   onChoosePass,
+  teamChat,
+  onSendTeamChat,
+  onStealReady,
 }: PlayerGameScreenProps) {
   const self = room.players[selfId];
   const myTeam = self.teamId ? room.teams[self.teamId] : null;
@@ -43,130 +63,124 @@ export default function PlayerGameScreen({
   const canSteal = room.phase === "STEAL_ATTEMPT" && myTeam?.id === room.controllingTeamId;
   const canChoose = room.phase === "CONTROL_DECISION" && Boolean(isCaptain) && myTeam?.id === room.controllingTeamId;
   const answerEnabled = canAnswerFaceOff || canPlayBoard || canSteal;
+  const gameOver = room.phase === "GAME_RESULT";
+  const inHuddle = (room.phase === "STEAL_CONFERENCE" || room.phase === "STEAL_ATTEMPT") && myTeam !== null && myTeam.id === room.controllingTeamId;
 
   let statusMessage: string | null = null;
   if (room.phase === "FACE_OFF") {
     if (room.currentQuestionId === null) {
-      statusMessage = "Waiting for the host to start the question…";
+      statusMessage = room.hostMode === "AI" ? "The AI host is cueing up the next question…" : "Waiting for the host to start the question…";
+    } else if (room.timer.kind === "QUESTION_INTRO") {
+      statusMessage = "Read the question… buzzers open in a moment!";
     } else if (room.activePlayerId && room.activePlayerId !== selfId) {
       statusMessage = `${room.players[room.activePlayerId].displayName} is answering…`;
     } else if (room.timer.kind === "BUZZ" && !isCaptain) {
-      statusMessage = "Waiting for a face-off captain to buzz in…";
+      statusMessage = "Face-off! Waiting for a captain to buzz in…";
     }
   } else if (room.phase === "CONTROL_DECISION" && !canChoose && controllingTeam) {
     statusMessage = `Waiting for ${controllingTeam.name}'s captain to choose Play or Pass…`;
   } else if (room.phase === "PLAYING_BOARD" && !canPlayBoard && controllingTeam) {
     statusMessage = `${controllingTeam.name} is playing the board…`;
-  } else if (room.phase === "STEAL_CONFERENCE" && controllingTeam) {
-    statusMessage = `${controllingTeam.name} is conferring for the steal…`;
+  } else if (room.phase === "STEAL_CONFERENCE" && controllingTeam && !inHuddle) {
+    statusMessage = `🔒 ${controllingTeam.name} is huddling privately for the steal…`;
   } else if (room.phase === "STEAL_ATTEMPT" && !canSteal && controllingTeam) {
-    statusMessage = `${controllingTeam.name} is attempting to steal!`;
+    statusMessage = `${controllingTeam.name} is going for the steal!`;
   } else if (room.phase === "ROUND_RESULT") {
-    statusMessage = "Round over — waiting for the host to continue…";
+    statusMessage = "Round over! Next question coming up…";
   }
 
+  const myTheme = teamTheme(myTeam?.id);
+  const badge = myTeam ? (
+    <span className={myTheme.text}>
+      {myTeam.name}
+      {isCaptain ? " · face-off captain" : ""}
+    </span>
+  ) : (
+    "Spectating"
+  );
+
   return (
-    <main className="egg-crate-texture min-h-screen p-4 sm:p-8 flex flex-col items-center gap-6">
-      <div className="w-full max-w-4xl flex items-center justify-between">
-        <span className="font-heading text-sm text-slate-400">
-          {myTeam ? `${myTeam.name}${isCaptain ? " — you're the face-off captain" : ""}` : "Spectating"}
-        </span>
-        <span className="font-heading text-sm text-slate-400">
-          Room code: <span className="text-gold-400 tracking-widest">{room.roomCode}</span>
-        </span>
-      </div>
+    <main className="egg-crate-texture relative min-h-screen overflow-x-hidden">
+      <div className="stage-lights animate-spotlight-drift" aria-hidden />
+      <div className="relative z-10 flex flex-col items-center gap-5 p-3 sm:p-6">
+        <GameHeader room={room} badge={badge} />
 
-      <div className="flex w-full max-w-5xl items-center justify-center gap-4">
-        <ScoreCounter label={room.teams["team-1"].name} value={room.teams["team-1"].score} />
+        {room.hostMode === "AI" && <AiHostBubble line={hostLine} />}
 
-        <div className="board-oval egg-crate-texture relative flex-1 px-6 py-8 sm:px-10 sm:py-10">
-          <div className="mx-auto mb-4 max-w-xl rounded-md bg-slate-100 px-4 py-3 text-center">
-            <p className="font-heading text-lg text-navy-900">{room.questionText ?? "Get ready…"}</p>
-          </div>
-
-          <div className="mx-auto grid max-w-xl grid-cols-2 gap-2">
+        {gameOver ? (
+          <FinalResults room={room} selfId={selfId} />
+        ) : (
+          <GameBoard room={room} idleQuestion="Get ready…">
             {room.board.slots.map((slot, i) => (
               <FlipCard
                 key={slot.answerId}
                 number={i + 1}
                 answer={slot.answerText ?? ""}
                 points={slot.points}
+                rank={slot.rank}
                 revealed={slot.revealed}
+                missed={slot.missed}
                 celebrate={justRevealedIndex === i}
               />
             ))}
-          </div>
-
-          <div className="mt-4 flex items-center justify-center gap-6">
-            <div className="rounded-lg border-2 border-gold-500 bg-navy-950 px-5 py-2 text-center">
-              <span className="block text-xs text-slate-400">BOARD</span>
-              <span className="font-display text-3xl text-gold-400">{room.board.currentTotal}</span>
-            </div>
-            <div className="flex gap-2">
-              {[0, 1, 2].map((i) => {
-                const strikes = room.controllingTeamId ? room.teams[room.controllingTeamId].strikes : 0;
-                return (
-                  <span
-                    key={i}
-                    className={`flex h-9 w-9 items-center justify-center rounded border-2 font-display text-xl ${
-                      i < strikes ? "border-red-500 bg-red-600 text-white" : "border-navy-600 text-navy-600"
-                    }`}
-                  >
-                    X
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        <ScoreCounter label={room.teams["team-2"].name} value={room.teams["team-2"].score} />
-      </div>
-
-      <TimerBar
-        timer={room.timer}
-        label={room.timer.kind === "BUZZ" ? "Buzz in!" : room.timer.kind === "ANSWER" ? "Your answer" : "Steal conference"}
-      />
-
-      <SubmissionBannerView
-        submission={room.lastSubmission}
-        teamName={room.lastSubmission ? room.teams[room.lastSubmission.teamId].name : ""}
-      />
-
-      {statusMessage && <p className="text-center text-slate-300">{statusMessage}</p>}
-      {error && <p className="text-center text-sm text-red-400">{error}</p>}
-
-      <div className="flex flex-col items-center gap-4">
-        {canBuzz && <BuzzerButton enabled onBuzz={onBuzz} />}
-
-        {answerEnabled && (
-          <AnswerInput
-            enabled
-            placeholder={canSteal ? "Your team's one steal guess…" : "Type your answer…"}
-            onSubmit={onSubmitAnswer}
-          />
+          </GameBoard>
         )}
 
-        {canChoose && (
-          <div className="flex gap-3">
-            <button onClick={onChoosePlay} className="rounded bg-gold-500 px-6 py-2 font-heading text-navy-950 hover:bg-gold-400">
-              Play
-            </button>
-            <button onClick={onChoosePass} className="rounded bg-navy-700 px-6 py-2 font-heading hover:bg-navy-600">
-              Pass
-            </button>
-          </div>
-        )}
-      </div>
+        {!gameOver && (
+          <>
+            {/* The huddle panel has its own countdown for the stealing team. */}
+            {!inHuddle && <TimerBar
+              timer={room.timer}
+              label={room.timer.kind === "BUZZ" ? "Buzz in!" : room.timer.kind === "ANSWER" ? "Answer now" : "Steal huddle"}
+            />}
 
-      {room.phase === "GAME_RESULT" && (
-        <div className="text-center">
-          <h2 className="font-display text-3xl text-gold-500">Final Score</h2>
-          <p className="mt-2 text-xl">
-            {room.teams["team-1"].name}: {room.teams["team-1"].score} — {room.teams["team-2"].name}: {room.teams["team-2"].score}
-          </p>
-        </div>
-      )}
+            <SubmissionBannerView
+              submission={room.lastSubmission}
+              teamName={room.lastSubmission ? room.teams[room.lastSubmission.teamId].name : ""}
+            />
+
+            {statusMessage && (
+              <p key={statusMessage} className="animate-banner-in rounded-full border border-navy-600 bg-navy-950/70 px-4 py-1.5 text-center text-sm text-slate-200">
+                {statusMessage}
+              </p>
+            )}
+            {error && <p className="rounded-full bg-red-950/70 px-4 py-1 text-center text-sm text-red-300">{error}</p>}
+
+            <div className="flex w-full flex-col items-center gap-4">
+              {inHuddle && (
+                <StealHuddle room={room} selfId={selfId} messages={teamChat} onSend={onSendTeamChat} onDone={onStealReady} interim={mic.iHoldMic ? mic.interim : ""} />
+              )}
+              {canBuzz && <BuzzerButton enabled onBuzz={onBuzz} />}
+
+              {answerEnabled && (
+                <AnswerInput enabled placeholder={canSteal ? "Your team's one steal guess…" : undefined} onSubmit={onSubmitAnswer} />
+              )}
+
+              {canChoose && (
+                <div className="flex animate-slam-in flex-col items-center gap-2">
+                  <p className="font-heading tracking-[0.25em] text-gold-400">YOU WON THE FACE-OFF</p>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={onChoosePlay}
+                      className="rounded-xl bg-gradient-to-b from-gold-400 to-gold-600 px-8 py-3 font-display text-2xl tracking-wide text-navy-950 shadow-[0_5px_0_#8a6a05] transition hover:brightness-110 active:translate-y-1 active:shadow-[0_1px_0_#8a6a05]"
+                    >
+                      PLAY
+                    </button>
+                    <button
+                      onClick={onChoosePass}
+                      className="rounded-xl bg-gradient-to-b from-navy-600 to-navy-800 px-8 py-3 font-display text-2xl tracking-wide text-white shadow-[0_5px_0_#050b1f] transition hover:brightness-110 active:translate-y-1 active:shadow-[0_1px_0_#050b1f]"
+                    >
+                      PASS
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {room.hostMode === "AI" && <ChatPanel room={room} selfId={selfId} mic={mic} onSend={onSendChat} />}
+      </div>
 
       <StrikePopup visible={showStrike} />
     </main>

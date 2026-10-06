@@ -22,6 +22,13 @@ const envSchema = z.object({
   LLM_PROVIDER: z.string().default("anthropic"),
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().default("claude-haiku-4-5"),
+  /** Per-request timeout for the AI host's model calls; on timeout the canned host covers that beat. */
+  LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  /** Optional effort override (low|medium|high) for models that support it; unset picks a fast default per model. */
+  LLM_EFFORT: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["low", "medium", "high"]).optional()),
+
+  /** Questions per AI-hosted game before the AI host wraps up. */
+  AI_HOST_ROUNDS: z.coerce.number().int().positive().default(5),
 
   EMBEDDING_PROVIDER: z.string().default("local"),
   EMBEDDING_API_KEY: z.string().optional(),
