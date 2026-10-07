@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AI_HOST_ID } from "@zamily-feud/shared";
-import type { ChatMessage, HostCommentary, HostEventType, RoomSession } from "@zamily-feud/shared";
+import type { ChatMessage, HostCommentary, HostEventType, RoomEvent, RoomSession } from "@zamily-feud/shared";
 import { RoomError, type RoomStore } from "../rooms/roomStore.js";
 import { detectSituation } from "./situations.js";
 import type { ActionOutcome, HostAction, HostBrain, HostTurn, Situation } from "./types.js";
@@ -34,6 +34,10 @@ interface RoomHostState {
   loggedChatIds: Set<string>;
   /** `at` of the newest player message the host has already had a chance to answer. */
   chatAnsweredUpTo: number;
+  /** Room events (joins, exits, renames) already copied into the show log. */
+  loggedEventIds: Set<string>;
+  /** `at` of the newest room event the host has already reacted to. */
+  eventsAnsweredUpTo: number;
   /** Earliest time the next chat-triggered turn may run (keeps chat replies from flooding, and the API bill down). */
   nextChatTurnAt: number;
 }
@@ -45,6 +49,21 @@ const CHAT_DEBOUNCE_MS = 1_200;
 const CHAT_MIN_GAP_MS = 4_000;
 /** Most recent unanswered messages shown to the host in one chat turn. */
 const CHAT_BATCH_LIMIT = 6;
+/** Claude tries a required game move up to this many times before the canned host steps in. */
+const LLM_ATTEMPTS = 2;
+
+function describeEvent(e: RoomEvent): string {
+  switch (e.kind) {
+    case "JOINED":
+      return `${e.playerName} joined the room`;
+    case "LEFT":
+      return `${e.playerName}${e.teamName ? ` (${e.teamName})` : ""} left the game`;
+    case "TEAM_RENAMED":
+      return `"${e.previousName}" renamed itself "${e.teamName}"`;
+    case "TEAMS_SHUFFLED":
+      return "the teams were shuffled at random";
+  }
+}
 
 function describeChat(room: RoomSession, m: ChatMessage): string {
   const team = m.teamId ? room.teams[m.teamId]?.name : null;
@@ -110,6 +129,8 @@ export class AiHostDirector {
         buzzerReopensByQuestion: new Map(),
         loggedChatIds: new Set(),
         chatAnsweredUpTo: 0,
+        loggedEventIds: new Set(),
+        eventsAnsweredUpTo: 0,
         nextChatTurnAt: 0,
       };
       this.states.set(roomId, state);
@@ -117,8 +138,11 @@ export class AiHostDirector {
     return state;
   }
 
-  /** The game moment (if any) and the chat moment (if any) right now. Game moments take priority; see drain(). */
-  private current(roomId: string, state: RoomHostState): { room: RoomSession; game: Situation | null; chat: Situation | null } | null {
+  /** The game, roster, and chat moments (if any) right now. Game moments come first, then roster, then chat; see drain(). */
+  private current(
+    roomId: string,
+    state: RoomHostState,
+  ): { room: RoomSession; game: Situation | null; roster: Situation | null; chat: Situation | null } | null {
     const room = this.roomStore.getRoom(roomId);
     if (!room) return null;
     if (room.phase === "CONTROL_DECISION" && room.currentQuestionId && room.controllingTeamId) {
@@ -130,19 +154,47 @@ export class AiHostDirector {
         this.log(state, `CHAT ${describeChat(room, m)}`);
       }
     }
+    for (const e of room.roomEvents) {
+      if (!state.loggedEventIds.has(e.id)) {
+        state.loggedEventIds.add(e.id);
+        this.log(state, `EVENT: ${describeEvent(e)}.`);
+      }
+    }
     const game = detectSituation(room, {
       faceOffAttemptedTeamIds: this.roomStore.getFaceOffAttemptedTeamIds(roomId),
       totalRounds: this.options.totalRounds,
       faceOffWinnerTeamId: room.currentQuestionId ? state.faceOffWinnerByQuestion.get(room.currentQuestionId) ?? null : null,
       boardOwnerTeamId: this.roomStore.getBoardOwnerTeamId(roomId),
     });
-    return { room, game, chat: this.chatSituation(room, state) };
+    return { room, game, roster: this.rosterSituation(room, state), chat: this.chatSituation(room, state) };
   }
 
   /** Whether a moment the host is working on still holds (a game move must not land on a moment that has passed). */
   private isCurrent(roomId: string, state: RoomHostState, situation: Situation): boolean {
     const now = this.current(roomId, state);
-    return (situation.kind === "CHAT" ? now?.chat : now?.game)?.key === situation.key;
+    const current = situation.kind === "CHAT" ? now?.chat : situation.kind === "ROSTER" ? now?.roster : now?.game;
+    return current?.key === situation.key;
+  }
+
+  /** Arrivals, exits, and team changes the host hasn't reacted to yet. A burst (three friends joining at once) gets one line. */
+  private rosterSituation(room: RoomSession, state: RoomHostState): Situation | null {
+    const pending = room.roomEvents.filter((e) => e.at > state.eventsAnsweredUpTo);
+    if (pending.length === 0) return null;
+    const last = pending[pending.length - 1];
+    const someoneLeft = pending.some((e) => e.kind === "LEFT");
+    return {
+      kind: "ROSTER",
+      key: `roster:${last.id}`,
+      eventType: "BANTER",
+      brief: `Just now in the room:\n${pending.map((e) => `- ${describeEvent(e)}`).join("\n")}\n${
+        someoneLeft
+          ? "Give the exit a quick joke in your style (tease the departure, never guilt or mock the person who left), and keep everyone else's energy up."
+          : "React in one quick line: welcome newcomers by name, or riff on the team change."
+      }`,
+      allowed: ["say"],
+      requiresAction: false,
+      delayMs: Math.max(CHAT_DEBOUNCE_MS, state.nextChatTurnAt - Date.now()),
+    };
   }
 
   /** Unanswered player chat, as a moment. Only picked when no unhandled game moment is waiting. */
@@ -175,7 +227,7 @@ export class AiHostDirector {
           return;
         }
         // A game moment that's still showing but already handled (e.g. "Team 1 is playing the board") mustn't block the chat.
-        const situation = now.game && !state.handled.has(now.game.key) ? now.game : now.chat;
+        const situation = [now.game, now.roster, now.chat].find((s) => s && !state.handled.has(s.key)) ?? null;
         if (situation && !state.handled.has(situation.key)) {
           state.handled.add(situation.key);
           await this.handle(roomId, state, situation);
@@ -198,10 +250,15 @@ export class AiHostDirector {
         return;
       }
     }
+    const room = this.roomStore.getRoom(roomId);
     if (situation.kind === "CHAT") {
-      const room = this.roomStore.getRoom(roomId);
       state.chatAnsweredUpTo = Math.max(state.chatAnsweredUpTo, ...(room?.chat.map((m) => m.at) ?? [0]));
       state.nextChatTurnAt = Date.now() + CHAT_MIN_GAP_MS;
+    }
+    // The sign-off already covers a walkout, so the exits that caused it don't get a second joke.
+    if (situation.kind === "ROSTER" || situation.kind === "GAME_OVER") {
+      state.eventsAnsweredUpTo = Math.max(state.eventsAnsweredUpTo, ...(room?.roomEvents.map((e) => e.at) ?? [0]));
+      if (situation.kind === "ROSTER") state.nextChatTurnAt = Date.now() + CHAT_MIN_GAP_MS;
     }
 
     let actionDone = false;
@@ -229,12 +286,14 @@ export class AiHostDirector {
       console.log(JSON.stringify({ event: "AI_HOST_TURN", roomId, brain: brain.name, situation: situation.kind, actionDone, ms: Date.now() - startedAt }));
     };
 
-    if (this.brains.llm) {
+    // With a key, the canned host is a last resort: a game move that Claude didn't land gets one more Claude try first.
+    for (let attempt = 1; this.brains.llm && attempt <= LLM_ATTEMPTS; attempt++) {
       try {
         await run(this.brains.llm);
       } catch (err) {
-        console.error(JSON.stringify({ event: "AI_HOST_LLM_FAILED", roomId, situation: situation.kind, message: (err as Error).message }));
+        console.error(JSON.stringify({ event: "AI_HOST_LLM_FAILED", roomId, situation: situation.kind, attempt, message: (err as Error).message }));
       }
+      if (!situation.requiresAction || actionDone || !this.isCurrent(roomId, state, situation)) break;
     }
 
     const stillCurrent = this.isCurrent(roomId, state, situation);
@@ -249,7 +308,8 @@ export class AiHostDirector {
 
   /** Shows the line in the speech bubble (read aloud) and posts it to the room chat. Callers broadcast the room afterwards. */
   private speak(roomId: string, state: RoomHostState, eventType: HostEventType, text: string, source: "LLM" | "CANNED"): void {
-    const line = text.trim();
+    // Text-to-speech reads markdown aloud ("asterisk my asterisk"), so strip any that slips through.
+    const line = text.replace(/[*`]/g, "").trim();
     if (!line) return;
     this.roomStore.postHostChat(roomId, line);
     this.effects.say(roomId, { id: randomUUID(), eventType, text: line, source, at: Date.now() });

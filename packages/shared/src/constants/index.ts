@@ -31,6 +31,7 @@ export const HOST_PERSONAS = [
 ] as const satisfies readonly { id: AgeCategory; label: string }[];
 
 export const CHAT_HISTORY_LIMIT = 50;
+export const ROOM_EVENT_LIMIT = 20;
 export const CHAT_MAX_LENGTH = 200;
 /** A team mic auto-releases after this long so nobody can hog it. */
 export const MIC_MAX_HOLD_MS = 30_000;

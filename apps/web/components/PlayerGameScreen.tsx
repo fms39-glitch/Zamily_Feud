@@ -33,6 +33,7 @@ interface PlayerGameScreenProps {
   teamChat: ChatMessage[];
   onSendTeamChat: (text: string) => void;
   onStealReady: () => void;
+  onExit: () => void;
 }
 
 export default function PlayerGameScreen({
@@ -51,6 +52,7 @@ export default function PlayerGameScreen({
   teamChat,
   onSendTeamChat,
   onStealReady,
+  onExit,
 }: PlayerGameScreenProps) {
   const self = room.players[selfId];
   const myTeam = self.teamId ? room.teams[self.teamId] : null;
@@ -103,7 +105,12 @@ export default function PlayerGameScreen({
     <main className="egg-crate-texture relative min-h-screen overflow-x-hidden">
       <div className="stage-lights animate-spotlight-drift" aria-hidden />
       <div className="relative z-10 flex flex-col items-center gap-5 p-3 sm:p-6">
-        <GameHeader room={room} badge={badge} />
+        <GameHeader
+          room={room}
+          badge={badge}
+          onExit={onExit}
+          exitWarning={myTeam && myTeam.playerIds.length === 1 && !gameOver ? `You're the last one on ${myTeam.name}, so leaving ends the game.` : undefined}
+        />
 
         {room.hostMode === "AI" && <AiHostBubble line={hostLine} />}
 

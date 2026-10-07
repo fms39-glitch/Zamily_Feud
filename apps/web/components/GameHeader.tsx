@@ -3,15 +3,19 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { RoomSession } from "@zamily-feud/shared";
 import { isSfxMuted, setSfxMuted } from "../lib/sfx";
+import ExitButton from "./ExitButton";
 
 interface GameHeaderProps {
   room: RoomSession;
   /** Left-side context: "Team 1 · face-off captain", "HOST VIEW", etc. */
   badge: ReactNode;
+  onExit: () => void;
+  /** Shown in the exit confirmation, e.g. when leaving ends the game for everyone. */
+  exitWarning?: string;
 }
 
-/** Frosted top bar: logo, who you are, the room code (tap to copy), and the sound-effects toggle. */
-export default function GameHeader({ room, badge }: GameHeaderProps) {
+/** Frosted top bar: logo, who you are, the room code (tap to copy), the sound-effects toggle, and Exit. */
+export default function GameHeader({ room, badge, onExit, exitWarning }: GameHeaderProps) {
   const [copied, setCopied] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   useEffect(() => setSoundOn(!isSfxMuted()), []);
@@ -50,6 +54,7 @@ export default function GameHeader({ room, badge }: GameHeaderProps) {
         >
           {soundOn ? "🔔" : "🔕"}
         </button>
+        <ExitButton onConfirm={onExit} warning={exitWarning} />
       </div>
       <span className="w-full truncate font-heading text-sm tracking-wide text-slate-300 sm:hidden">{badge}</span>
     </header>

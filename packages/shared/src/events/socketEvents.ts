@@ -98,6 +98,8 @@ type Ack = (result: { ok: true } | ErrorPayload) => void;
 export interface ClientToServerEvents {
   ROOM_CREATE: (payload: RoomCreatePayload, ack: (result: { roomId: string; roomCode: string; playerId: string } | ErrorPayload) => void) => void;
   ROOM_JOIN: (payload: RoomJoinPayload, ack: (result: { roomId: string; playerId: string } | ErrorPayload) => void) => void;
+  /** Leave the room for good (lobby or mid-game). A human host leaving closes the room for everyone. */
+  ROOM_LEAVE: (payload: Record<string, never>, ack: Ack) => void;
   PLAYER_READY: (payload: PlayerReadyPayload) => void;
   TEAM_AUTO_BALANCE: (payload: Record<string, never>, ack: Ack) => void;
   TEAM_ASSIGN: (payload: TeamAssignPayload, ack: Ack) => void;
@@ -163,5 +165,7 @@ export interface ServerToClientEvents {
   PLAYER_AVATARS: (payload: { avatars: Record<string, string> }) => void;
   /** A private steal-huddle message, delivered only to the stealing team's members. */
   TEAM_CHAT_MESSAGE: (payload: ChatMessage) => void;
+  /** The room is gone (the human host left); clients return to the start screen. */
+  ROOM_CLOSED: (payload: { reason: string }) => void;
   ERROR: (payload: ErrorPayload) => void;
 }

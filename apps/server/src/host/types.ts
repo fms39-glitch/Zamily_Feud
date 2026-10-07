@@ -33,6 +33,8 @@ export type SituationKind =
   | "STEAL_HUDDLE"
   | "ROUND_OVER"
   | "GAME_OVER"
+  | "LOBBY_WELCOME"
+  | "ROSTER"
   | "CHAT";
 
 /** A moment in the game that needs the host. Derived purely from room state, so each one is handled exactly once (by key). */

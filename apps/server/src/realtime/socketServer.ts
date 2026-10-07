@@ -166,6 +166,40 @@ export function createSocketServer(
       }
     });
 
+    socket.on("ROOM_LEAVE", async (_payload, ack) => {
+      const { roomId, playerId } = socket.data;
+      if (!roomId || !playerId) {
+        ack({ code: "NOT_IN_ROOM", message: "You are not in a room" });
+        return;
+      }
+      try {
+        const { room, closed } = roomStore.leaveRoom(roomId, playerId);
+        socket.data.roomId = undefined;
+        socket.data.playerId = undefined;
+        socketIdByPlayer.delete(playerId);
+        socket.leave(roomId);
+        socket.leave(hostChannel(roomId));
+        ack({ ok: true });
+        if (closed) {
+          // The host walked out (or nobody's left): send everyone home and detach their sockets from the dead room.
+          io.to(roomId).emit("ROOM_CLOSED", { reason: "The host left, so the game has ended." });
+          for (const s of await io.in(roomId).fetchSockets()) {
+            if (s.data.playerId) socketIdByPlayer.delete(s.data.playerId);
+            s.data.roomId = undefined;
+            s.data.playerId = undefined;
+            s.leave(roomId);
+          }
+          aiHost.forget(roomId);
+          return;
+        }
+        io.to(roomId).emit("PLAYER_AVATARS", { avatars: roomStore.getAvatars(roomId) });
+        broadcastRoom(roomId, room);
+        scheduleTimerIfNeeded(roomId, room);
+      } catch (err) {
+        ackError(ack, err);
+      }
+    });
+
     socket.on("PLAYER_READY", (payload) => {
       const { roomId, playerId } = socket.data;
       if (!roomId || !playerId) return;

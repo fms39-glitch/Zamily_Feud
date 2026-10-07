@@ -19,7 +19,13 @@ type LineKey =
   | "final"
   | "signOff"
   | "chatReply"
-  | "chatRules";
+  | "chatRules"
+  | "lobbyWelcome"
+  | "joined"
+  | "left"
+  | "renamed"
+  | "shuffled"
+  | "walkout";
 
 /**
  * Placeholders: {name} {team} {other} {answer} {said} {points} {question} {round}
@@ -68,6 +74,27 @@ const LINES: Record<AgeCategory, Record<LineKey, string[]>> = {
     chatRules: [
       "Great question, {name}! Captains buzz in the face-off, the winner picks play or pass, and three strikes lets the other family steal with one guess.",
     ],
+    lobbyWelcome: [
+      "Welcome, welcome, {name}! I'm your host, and I've been polishing this board all day. Share the room code and let's fill this place up!",
+      "Hi {name}! The lights are on, the board is shiny, and I'm so excited I could clap, if I had hands. Invite your family!",
+    ],
+    joined: [
+      "Look who's here, it's {name}! Come on in, the snacks are imaginary but the fun is real.",
+      "{name} has arrived! Everybody give a big Zamily Feud welcome!",
+    ],
+    left: [
+      "Aww, {name} had to go! Bye, {name}! We'll save your seat and keep it warm.",
+      "{name} just waved goodbye! Don't worry, I'm not crying, my screen is just a little blurry.",
+    ],
+    renamed: [
+      "{team}? What a name! I love it. {previous} was nice, but {team} is a winner.",
+    ],
+    shuffled: [
+      "The teams are shuffled! It's like a family reunion where everybody switched seats.",
+    ],
+    walkout: [
+      "Well, {loser} headed home early, so {winner} wins the game with {points} points! Thanks for playing, everybody!",
+    ],
   },
   SASSY: {
     open: [
@@ -107,6 +134,27 @@ const LINES: Record<AgeCategory, Record<LineKey, string[]>> = {
     ],
     chatRules: [
       "Pay attention, {name}: captains buzz, the winner picks play or pass, three strikes and the other team steals with one guess. Iconic, simple, mine.",
+    ],
+    lobbyWelcome: [
+      "Well, well, well. {name} opened the room, and I've arrived. Share that code, darling, an audience of one is beneath me.",
+      "{name}, you made a room for me? How thoughtful. Now go get some contestants, the green room is tragically empty.",
+    ],
+    joined: [
+      "{name} has entered the building. The entrance? A solid seven. We'll work on it.",
+      "Oh, {name} decided to show up. Fashionably late, I respect it.",
+    ],
+    left: [
+      "{name} just walked off set. The drama! The mystery! Anyway, goodbye, darling, it was iconic while it lasted.",
+      "And {name} has left the building. Not a goodbye, not a wave. I'm not hurt. I'm a little hurt.",
+    ],
+    renamed: [
+      "Oh, we're {team} now? Bold rebrand from {previous}. I'll allow it.",
+    ],
+    shuffled: [
+      "Teams shuffled. New alliances, new betrayals. Delicious.",
+    ],
+    walkout: [
+      "{loser} has left the stage entirely. Well. {winner} wins by forfeit with {points} points. Not how I'd write it, but a crown is a crown.",
     ],
   },
   MILLENNIAL: {
@@ -148,6 +196,27 @@ const LINES: Record<AgeCategory, Record<LineKey, string[]>> = {
     chatRules: [
       "Okay {name}, quick onboarding: captains buzz, the winner picks play or pass, three strikes and the other team steals with one guess.",
     ],
+    lobbyWelcome: [
+      "Hi {name}, welcome. This is the part of the meeting where we wait for people to find the link. Share the room code.",
+      "Hey {name}. Room's open, I'm here, mildly caffeinated. Send the code to the group chat and let's see who actually shows up.",
+    ],
+    joined: [
+      "Oh good, {name} found the link. Welcome.",
+      "{name} has joined. Love that for us. Cameras optional.",
+    ],
+    left: [
+      "{name} had a hard stop. Honestly? Respect. Bye, {name}.",
+      "And {name} has left the meeting. Living my dream. Take care.",
+    ],
+    renamed: [
+      "We've rebranded from {previous} to {team}. Very startup of you.",
+    ],
+    shuffled: [
+      "Teams got shuffled. Like a reorg, but fun, and nobody gets laid off.",
+    ],
+    walkout: [
+      "Everyone on {loser} logged off, so {winner} wins with {points} points. Not the ending we scheduled, but we'll take it.",
+    ],
   },
   GEN_Z: {
     open: [
@@ -184,6 +253,27 @@ const LINES: Record<AgeCategory, Record<LineKey, string[]>> = {
     ],
     chatRules: [
       "Bet, {name}: captains buzz, winner picks play or pass, three strikes and the other team gets one steal. Lock in.",
+    ],
+    lobbyWelcome: [
+      "We're live! {name} opened the room and the chat is... just {name}. Drop that room code, let's get some viewers.",
+      "Okay {name}, stream's up. Get the squad in here with the room code, it's giving empty lobby right now.",
+    ],
+    joined: [
+      "{name} just pulled up! Welcome to the stream, plus a hundred aura for showing up.",
+      "Shoutout {name}, you're live! The lobby is getting stacked.",
+    ],
+    left: [
+      "{name} left the stream. Minus ten aura, but we wish them well. Anyway, we move.",
+      "{name} logged off. Plot twist. Respect the exit, chat, we keep going.",
+    ],
+    renamed: [
+      "{previous} is now {team}? Okay, that name ate. Rebrand approved.",
+    ],
+    shuffled: [
+      "Teams shuffled! The bracket just got chaotic, chat.",
+    ],
+    walkout: [
+      "{loser} left the stream entirely. {winner} takes the W by forfeit with {points} points. GG, chat!",
     ],
   },
 };
@@ -299,9 +389,30 @@ export class CannedHostBrain implements HostBrain {
         else await act({ name: "next_round", line: line("nextRound") });
         return;
 
-      case "GAME_OVER":
-        await act({ name: "say", line: line("signOff") });
+      case "GAME_OVER": {
+        const walkout = Object.values(room.teams).find((t) => t.playerIds.length === 0);
+        const winner = walkout && Object.values(room.teams).find((t) => t.id !== walkout.id);
+        await act({
+          name: "say",
+          line: walkout && winner ? line("walkout", { loser: walkout.name, winner: winner.name, points: winner.score }) : line("signOff"),
+        });
         return;
+      }
+
+      case "LOBBY_WELCOME":
+        await act({ name: "say", line: line("lobbyWelcome", { name: room.players[room.ownerId]?.displayName ?? "friend" }) });
+        return;
+
+      case "ROSTER": {
+        // One line for the most telling recent change: an exit beats an arrival beats a team change.
+        const recent = room.roomEvents.slice(-5);
+        const latest = (kind: string) => [...recent].reverse().find((x) => x.kind === kind);
+        const e = latest("LEFT") ?? latest("JOINED") ?? recent[recent.length - 1];
+        if (!e) return;
+        const key: LineKey = e.kind === "LEFT" ? "left" : e.kind === "JOINED" ? "joined" : e.kind === "TEAM_RENAMED" ? "renamed" : "shuffled";
+        await act({ name: "say", line: line(key, { name: e.playerName ?? "", team: e.teamName ?? "", previous: e.previousName ?? "" }) });
+        return;
+      }
 
       case "CHAT": {
         // Without a model the host can't follow a conversation, so it only answers when clearly addressed.

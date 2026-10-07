@@ -93,6 +93,19 @@ export interface SubmissionBanner {
   submittedAt: number;
 }
 
+/** Comings and goings the AI host reacts to: arrivals, exits, team renames, shuffles. Newest last, capped. */
+export interface RoomEvent {
+  id: string;
+  kind: "JOINED" | "LEFT" | "TEAM_RENAMED" | "TEAMS_SHUFFLED";
+  /** The player who joined or left. */
+  playerName: string | null;
+  /** JOINED/LEFT: the player's team (null if unassigned). TEAM_RENAMED: the new name. */
+  teamName: string | null;
+  /** TEAM_RENAMED: the old name. */
+  previousName?: string;
+  at: number;
+}
+
 /** Server-authoritative timer snapshot; clients render from this, never from local setInterval alone. */
 export interface TimerState {
   id: string | null;
@@ -137,6 +150,8 @@ export interface RoomSession {
   micHolders: Record<string, string | null>;
   /** null once resolved (host reveals/marks wrong, or a new question starts). */
   lastSubmission: SubmissionBanner | null;
+  /** Recent arrivals, exits, and team changes, newest last, capped at ROOM_EVENT_LIMIT. */
+  roomEvents: RoomEvent[];
 
   createdAt: number;
   lastActivityAt: number;

@@ -187,6 +187,25 @@ describe("AI host director — LLM brain safety nets", () => {
     expect(said.some((c) => c.source === "CANNED")).toBe(true);
   });
 
+  it("gives the LLM a second try at a game move before any canned line is used", async () => {
+    let judgeCalls = 0;
+    const flaky: HostBrain = {
+      name: "LLM",
+      async takeTurn(turn: HostTurn) {
+        if (turn.situation.kind !== "JUDGE_ANSWER") {
+          if (turn.situation.allowed.includes("start_question")) await turn.execute({ name: "start_question", line: "Let's go!" });
+          return;
+        }
+        if (++judgeCalls === 1) throw new Error("timeout");
+        await turn.execute({ name: "reveal_answer", slotNumber: 1, line: "Pyramids, on the second try!" });
+      },
+    };
+    const { room, said } = await toJudging(flaky);
+    expect(judgeCalls).toBe(2);
+    expect(room().board.slots[0].revealed).toBe(true);
+    expect(said.every((c) => c.source === "LLM")).toBe(true);
+  });
+
   it("rejects illegal moves with a readable error and lets the LLM correct itself", async () => {
     const errors: string[] = [];
     const llm: HostBrain = {

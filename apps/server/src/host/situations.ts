@@ -7,6 +7,8 @@ export const OPENING_DELAY_MS = 4_200;
 export const ROUND_OVER_DELAY_MS = 5_500;
 /** After the board clears, a short breath before the next question appears. */
 export const NEXT_QUESTION_DELAY_MS = 1_800;
+/** Lets the lobby render before the host's first hello. */
+export const LOBBY_WELCOME_DELAY_MS = 1_200;
 
 export interface SituationContext {
   faceOffAttemptedTeamIds: string[];
@@ -31,15 +33,34 @@ function otherTeam(room: RoomSession, teamId: string): string {
  * and a moment the host already acted on disappears from here by itself.
  */
 export function detectSituation(room: RoomSession, ctx: SituationContext): Situation | null {
-  if (room.hostMode !== "AI" || room.phase === "LOBBY") return null;
+  if (room.hostMode !== "AI") return null;
   const qid = room.currentQuestionId;
 
+  if (room.phase === "LOBBY") {
+    const creator = room.players[room.ownerId]?.displayName ?? "the creator";
+    return {
+      kind: "LOBBY_WELCOME",
+      key: "lobby:welcome",
+      eventType: "BANTER",
+      brief: `${creator} just opened room ${room.roomCode} and is waiting for friends to join. Introduce yourself in character and warm up the room: friends join with the room code, ${creator} sorts the teams, and you'll run the show once teams are locked.`,
+      allowed: ["say"],
+      requiresAction: false,
+      delayMs: LOBBY_WELCOME_DELAY_MS,
+    };
+  }
+
   if (room.phase === "GAME_RESULT") {
+    // A team can only be empty here if its last player walked out mid-game (leaveRoom ends the game then).
+    const walkout = Object.values(room.teams).find((t) => t.playerIds.length === 0);
+    const winner = walkout ? Object.values(room.teams).find((t) => t.id !== walkout.id) : null;
     return {
       kind: "GAME_OVER",
       key: "game-over",
       eventType: "GAME_COMPLETE",
-      brief: "The game is over. Deliver a short sign-off: crown the winner (or call the tie), toast the losers kindly, thank everyone.",
+      brief:
+        walkout && winner
+          ? `The game ended early: everyone on ${walkout.name} left, so ${winner.name} wins by forfeit with ${winner.score} points. Sign off with a joke about the walkout (tease the exit, never the people), crown ${winner.name}, thank everyone.`
+          : "The game is over. Deliver a short sign-off: crown the winner (or call the tie), toast the losers kindly, thank everyone.",
       allowed: ["say"],
       requiresAction: false,
     };

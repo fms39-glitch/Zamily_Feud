@@ -37,7 +37,7 @@ const envSchema = z.object({
 
   EXACT_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(1.0),
   FUZZY_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.82),
-  VECTOR_AUTO_ACCEPT_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
+  VECTOR_AUTO_ACCEPT_THRESHOLD: z.coerce.number().min(0).max(1).default(0.8),
   VECTOR_AUTO_REJECT_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
 
   TTS_PROVIDER: z.string().default("mock"),

@@ -54,6 +54,10 @@ export default function HomePage() {
     socket.on("HOST_COMMENTARY", (line) => setHostLine(line));
     socket.on("PLAYER_AVATARS", ({ avatars }) => setAvatars(avatars));
     socket.on("TEAM_CHAT_MESSAGE", (m) => setTeamChat((prev) => [...prev, m]));
+    socket.on("ROOM_CLOSED", ({ reason }) => {
+      resetToStart();
+      setError(reason);
+    });
     socket.on("STRIKE", () => {
       sfx.buzzer();
       setShowStrike(true);
@@ -98,6 +102,7 @@ export default function HomePage() {
       socket.off("HOST_COMMENTARY");
       socket.off("PLAYER_AVATARS");
       socket.off("TEAM_CHAT_MESSAGE");
+      socket.off("ROOM_CLOSED");
       socket.off("STRIKE");
       socket.off("SLOT_REVEALED");
       socket.off("BUZZ_LOCKED");
@@ -160,6 +165,35 @@ export default function HomePage() {
     }
     prevPhase.current = room.phase;
   }, [room]);
+
+  /** Back to the start screen with a clean slate (the mic hook hangs up on its own once `room` is null). */
+  function resetToStart() {
+    setRoom(null);
+    setPlayerId(null);
+    setHostBoard(null);
+    setHostLine(null);
+    setAvatars({});
+    setTeamChat([]);
+    setCelebration(null);
+    setBanner(null);
+    setShowIntro(false);
+    prevPhase.current = null;
+    prevQuestionId.current = null;
+    prevTimerKind.current = null;
+    window.speechSynthesis?.cancel();
+  }
+
+  function handleLeave() {
+    getSocket().emit("ROOM_LEAVE", {}, (result) => {
+      // Already gone server-side (room closed or expired) still means we're out.
+      if ("code" in result && result.code !== "NOT_IN_ROOM" && result.code !== "ROOM_NOT_FOUND") {
+        setError(result.message);
+        return;
+      }
+      resetToStart();
+      setError(null);
+    });
+  }
 
   function ack(result: { ok: true } | { code: string; message: string }) {
     if ("code" in result) setError(result.message);
@@ -324,6 +358,8 @@ export default function HomePage() {
           mic={mic}
           onSendChat={handleSendChat}
           onSetAvatar={handleSetAvatar}
+          hostLine={hostLine}
+          onExit={handleLeave}
         />
         {rulesModal}
       </>
@@ -359,6 +395,7 @@ export default function HomePage() {
           onAdvanceSteal={handleAdvanceSteal}
           onNextRound={handleNextRound}
           onEndGame={handleEndGame}
+          onExit={handleLeave}
         />
         {fx}
       </>
@@ -383,6 +420,7 @@ export default function HomePage() {
         teamChat={teamChat}
         onSendTeamChat={handleSendTeamChat}
         onStealReady={handleStealReady}
+        onExit={handleLeave}
       />
       {fx}
     </>

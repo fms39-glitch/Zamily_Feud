@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import type { RoomSession } from "@zamily-feud/shared";
+import type { HostCommentary, RoomSession } from "@zamily-feud/shared";
 import { HOST_PERSONAS, MAX_PLAYERS_PER_TEAM, TEAM_IDS } from "@zamily-feud/shared";
 import ChatPanel from "./ChatPanel";
 import { teamTheme } from "../lib/teamTheme";
 import Avatar from "./Avatar";
 import AvatarPicker from "./AvatarPicker";
+import AiHostBubble from "./AiHostBubble";
+import ExitButton from "./ExitButton";
 import type { TeamMic } from "../hooks/useTeamMic";
 
 interface LobbyScreenProps {
@@ -22,6 +24,8 @@ interface LobbyScreenProps {
   mic: TeamMic;
   onSendChat: (text: string) => void;
   onSetAvatar: (image: string | null) => void;
+  hostLine: HostCommentary | null;
+  onExit: () => void;
 }
 
 function PlayerChip({
@@ -166,6 +170,8 @@ export default function LobbyScreen({
   mic,
   onSendChat,
   onSetAvatar,
+  hostLine,
+  onExit,
 }: LobbyScreenProps) {
   // The room creator manages teams in both modes; only a human host sits out of the teams.
   const isHost = room.ownerId === selfId;
@@ -188,10 +194,19 @@ export default function LobbyScreen({
               <span className="rounded-lg border border-gold-500/50 bg-navy-950/70 px-2 font-heading text-2xl tracking-[0.3em] text-white">{room.roomCode}</span>
             </p>
           </div>
-          <button onClick={onOpenRules} className="rounded border border-navy-600 px-3 py-1 text-sm hover:border-gold-500">
-            How to play
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={onOpenRules} className="rounded border border-navy-600 px-3 py-1 text-sm hover:border-gold-500">
+              How to play
+            </button>
+            <ExitButton onConfirm={onExit} warning={isHumanHost ? "You're the host: leaving closes the room for everyone." : undefined} />
+          </div>
         </div>
+
+        {room.hostMode === "AI" && (
+          <div className="mb-4 flex justify-center">
+            <AiHostBubble line={hostLine} />
+          </div>
+        )}
 
         {room.hostMode === "AI" && (
           <div className="mb-4 rounded-lg border border-gold-500/60 bg-navy-900/70 px-4 py-2 text-sm text-slate-300">

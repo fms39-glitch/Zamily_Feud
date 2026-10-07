@@ -48,16 +48,27 @@ column and its index would need a new migration to match the new dimension.
 
 Verified empirically (not guessed) against the pgvector cosine-similarity column:
 
-| Pair | Cosine similarity |
-|---|---|
-| dog / puppy | 0.80 |
-| dog / cat | 0.66 |
-| dog / pyramid | 0.18 |
+| Pair | Cosine similarity | |
+|---|---|---|
+| tv / television | 0.96 | same thing |
+| mom / mother | 0.90 | same thing |
+| sofa / couch | 0.86 | same thing |
+| physician / doctor | 0.86 | same thing |
+| bday party / birthday party | 0.85 | same thing |
+| puppy / dog | 0.80 | same thing |
+| father / mother | 0.73 | different |
+| truck / car | 0.69 | different |
+| cat / dog | 0.66 | different |
+| dog / pyramid | 0.18 | different |
 
-This is why `VECTOR_AUTO_ACCEPT_THRESHOLD=0.90` / `VECTOR_AUTO_REJECT_THRESHOLD=0.60`
-(`.env.example`) land "puppy vs dog" and "cat vs dog" in the LLM boundary zone rather than
-auto-accepting or auto-rejecting them — which matches the spec's own canonical example of a
-case the LLM tier should adjudicate.
+Same-meaning pairs land at 0.80 and up; the closest different-meaning pair we found tops out
+at 0.73. That's why `VECTOR_AUTO_ACCEPT_THRESHOLD=0.80` / `VECTOR_AUTO_REJECT_THRESHOLD=0.60`
+(`.env.example`): synonyms auto-accept even with no LLM key (the canned host only reveals
+auto-accepted matches), and 0.60-0.80 is the boundary zone the LLM host adjudicates.
+
+Typos are a separate tier: embeddings don't understand misspellings ("coutch" / "couch" scores
+0.28), so a one-letter slip on a 4+ letter word (missing, extra, or swapped letter) auto-accepts
+before the embedding tier runs.
 
 ## Scripts
 

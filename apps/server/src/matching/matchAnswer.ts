@@ -42,6 +42,31 @@ export function diceCoefficient(a: string, b: string): number {
   return (2 * intersection) / (a.length - 1 + (b.length - 1));
 }
 
+/** Edit distance counting insertions, deletions, substitutions, and adjacent swaps (optimal string alignment). */
+export function editDistance(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/**
+ * One slipped key: a missing, extra, or swapped letter ("coutch", "pancaks",
+ * "hosue") on words of 4+ letters. A swapped-out letter only counts on longer
+ * words, since short ones flip meaning ("horse"/"house", "bear"/"beer").
+ */
+export function isLikelyTypo(submitted: string, answer: string): boolean {
+  const shorter = Math.min(submitted.length, answer.length);
+  if (shorter < 4 || editDistance(submitted, answer) !== 1) return false;
+  return submitted.length !== answer.length || shorter >= 7 || [...submitted].sort().join("") === [...answer].sort().join("");
+}
+
 export function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0;
   let normA = 0;
@@ -60,7 +85,7 @@ function noMatch(latencyMs: number): AnswerMatch {
 }
 
 /**
- * Tiered matching (spec: exact -> fuzzy -> vector). Always a suggestion for
+ * Tiered matching (spec: exact -> fuzzy -> one-letter typo -> vector). Always a suggestion for
  * the host, never authoritative — the host is the one who reveals or marks
  * an attempt wrong. `embed` is only called when every candidate answer has
  * an embedding; omit it (or leave some answers unembedded) to skip Tier 3.
@@ -114,6 +139,23 @@ export async function matchAnswer(
       similarity: bestFuzzyScore,
       latencyMs: Date.now() - startedAt,
       slotIndex: bestFuzzyIndex,
+      autoAccept: true,
+    };
+  }
+
+  const typoIndex = answers.findIndex((a) => isLikelyTypo(normalized, a.normalizedAnswer));
+  if (typoIndex !== -1) {
+    const a = answers[typoIndex];
+    return {
+      matched: true,
+      answerId: a.answerId,
+      matchedAnswer: a.answerText,
+      points: a.points,
+      rank: a.rank,
+      method: "FUZZY",
+      similarity: diceCoefficient(normalized, a.normalizedAnswer),
+      latencyMs: Date.now() - startedAt,
+      slotIndex: typoIndex,
       autoAccept: true,
     };
   }

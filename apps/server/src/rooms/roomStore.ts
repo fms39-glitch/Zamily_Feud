@@ -9,13 +9,14 @@ import {
   BUZZ_WINDOW_MS,
   MAX_ANSWER_ALTERNATIVES,
   QUESTION_INTRO_MS,
+  ROOM_EVENT_LIMIT,
   MAX_PLAYERS_PER_TEAM,
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   STRIKES_TO_STEAL,
   TEAM_IDS,
 } from "@zamily-feud/shared";
-import type { AgeCategory, ChatMessage, HostBoardState, HostMode, PlayerState, RoomSession, TeamState } from "@zamily-feud/shared";
+import type { AgeCategory, ChatMessage, HostBoardState, HostMode, PlayerState, RoomEvent, RoomSession, TeamState } from "@zamily-feud/shared";
 import type { EmbeddingProvider } from "../providers/embedding/EmbeddingProvider.js";
 import type { QuestionSource } from "../dataset/questionSource.js";
 import { matchAnswer, type AnswerMatch, type MatchableAnswer, type MatchThresholds } from "../matching/matchAnswer.js";
@@ -47,7 +48,7 @@ export interface RoomStoreDeps {
 const NO_TIMER = { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 } as const;
 const AVATAR_PREFIX = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 
-const DEFAULT_THRESHOLDS: MatchThresholds = { fuzzy: 0.82, vectorAccept: 0.9, vectorReject: 0.6 };
+const DEFAULT_THRESHOLDS: MatchThresholds = { fuzzy: 0.82, vectorAccept: 0.8, vectorReject: 0.6 };
 const MAX_ANSWER_LENGTH = 120;
 /** Minimum gap between one player's chat messages. */
 const CHAT_MIN_INTERVAL_MS = 700;
@@ -178,6 +179,7 @@ export class RoomStore {
       board: { slots: [], currentTotal: 0 },
       timer: { id: null, kind: null, durationMs: 0, startedAt: null, remainingMs: 0 },
       lastSubmission: null,
+      roomEvents: [],
       chat: [],
       micHolders: Object.fromEntries(TEAM_IDS.map((id) => [id, null])),
       createdAt: now,
@@ -203,9 +205,64 @@ export class RoomStore {
     const playerId = randomUUID();
     const player: PlayerState = { id: playerId, displayName, teamId: null, connected: true, isHost: false, ready: false, hasAvatar: false };
     room.players[playerId] = player;
+    this.pushRoomEvent(room, { kind: "JOINED", playerName: displayName, teamName: null });
 
     room.lastActivityAt = Date.now();
     return { room, playerId };
+  }
+
+  /**
+   * A player leaves for good. Keeps the game playable: a face-off answerer who
+   * walks out counts as a miss, captains and room ownership pass on, and a team
+   * left with nobody ends the game. A human host leaving (or the last player)
+   * closes the room — `closed` tells the caller to send everyone home.
+   */
+  leaveRoom(roomId: string, playerId: string): { room: RoomSession; closed: boolean } {
+    const room = this.getRoomOrThrow(roomId);
+    const player = room.players[playerId];
+    if (!player) throw new RoomError("PLAYER_NOT_FOUND", "You're not in this room");
+    const teamName = player.teamId ? room.teams[player.teamId]?.name ?? null : null;
+
+    this.dropMic(room, playerId);
+    delete room.players[playerId];
+    for (const team of Object.values(room.teams)) {
+      const idx = team.playerIds.indexOf(playerId);
+      if (idx !== -1) {
+        team.playerIds.splice(idx, 1);
+        recomputeCaptain(team);
+      }
+    }
+    const avatars = this.avatarsByRoom.get(roomId);
+    if (avatars) delete avatars[playerId];
+    this.lastChatAtByPlayer.delete(`${roomId}:${playerId}`);
+
+    if (room.hostId === playerId || Object.keys(room.players).length === 0) {
+      this.destroyRoom(roomId);
+      return { room, closed: true };
+    }
+    if (room.ownerId === playerId) room.ownerId = Object.keys(room.players)[0];
+
+    const inGame = room.phase !== "LOBBY" && room.phase !== "GAME_RESULT";
+    const round = this.roundsByRoom.get(roomId);
+    if (inGame && room.activePlayerId === playerId && room.phase === "FACE_OFF" && round) {
+      this.resolveFaceOffMiss(room, round);
+    }
+    if (inGame && Object.values(room.teams).some((t) => t.playerIds.length === 0)) {
+      room.phase = "GAME_RESULT";
+      room.activePlayerId = null;
+      room.controllingTeamId = null;
+      room.lastSubmission = null;
+      room.timer = { ...NO_TIMER };
+    }
+
+    this.pushRoomEvent(room, { kind: "LEFT", playerName: player.displayName, teamName });
+    room.lastActivityAt = Date.now();
+    return { room, closed: false };
+  }
+
+  private pushRoomEvent(room: RoomSession, event: Omit<RoomEvent, "id" | "at">): void {
+    room.roomEvents.push({ ...event, id: randomUUID(), at: Date.now() });
+    if (room.roomEvents.length > ROOM_EVENT_LIMIT) room.roomEvents.splice(0, room.roomEvents.length - ROOM_EVENT_LIMIT);
   }
 
   /** Owner-only. Moves a player onto a team (max 5) or back to the unassigned pool (teamId: null). */
@@ -268,6 +325,7 @@ export class RoomStore {
       room.players[playerId].teamId = team.id;
     });
     for (const team of teams) recomputeCaptain(team);
+    this.pushRoomEvent(room, { kind: "TEAMS_SHUFFLED", playerName: null, teamName: null });
 
     room.lastActivityAt = Date.now();
     return room;
@@ -282,7 +340,9 @@ export class RoomStore {
 
     const trimmed = name.trim();
     if (!trimmed) throw new RoomError("INVALID_NAME", "Team name cannot be blank");
+    const previousName = team.name;
     team.name = trimmed.slice(0, MAX_TEAM_NAME_LENGTH);
+    if (team.name !== previousName) this.pushRoomEvent(room, { kind: "TEAM_RENAMED", playerName: null, teamName: team.name, previousName });
 
     room.lastActivityAt = Date.now();
     return room;

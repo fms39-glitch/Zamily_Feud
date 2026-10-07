@@ -23,6 +23,7 @@ interface HostGameScreenProps {
   onAdvanceSteal: () => void;
   onNextRound: () => void;
   onEndGame: () => void;
+  onExit: () => void;
 }
 
 const BTN = "rounded-xl px-5 py-2.5 font-heading text-lg tracking-wide transition hover:brightness-110 active:translate-y-0.5";
@@ -44,6 +45,7 @@ export default function HostGameScreen({
   onAdvanceSteal,
   onNextRound,
   onEndGame,
+  onExit,
 }: HostGameScreenProps) {
   const suggestedSlot = room.lastSubmission?.suggestion.slotIndex ?? null;
   const buzzerDeadlocked = room.phase === "FACE_OFF" && room.activePlayerId === null && room.timer.kind === null && room.currentQuestionId !== null;
@@ -55,7 +57,12 @@ export default function HostGameScreen({
     <main className="egg-crate-texture relative min-h-screen overflow-x-hidden">
       <div className="stage-lights animate-spotlight-drift" aria-hidden />
       <div className="relative z-10 flex flex-col items-center gap-5 p-3 sm:p-6">
-        <GameHeader room={room} badge={<span className="text-gold-400">HOST VIEW · you run the board, you don&apos;t play</span>} />
+        <GameHeader
+          room={room}
+          badge={<span className="text-gold-400">HOST VIEW · you run the board, you don&apos;t play</span>}
+          onExit={onExit}
+          exitWarning="You're the host: leaving ends the game for everyone."
+        />
 
         {gameOver ? (
           <FinalResults room={room} selfId={null} />

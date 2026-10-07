@@ -2,12 +2,12 @@ import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { io as connect, type Socket } from "socket.io-client";
-import { HOST_PERSONAS, type HostCommentary } from "@zamily-feud/shared";
+import { HOST_PERSONAS, type HostCommentary, type RoomSession } from "@zamily-feud/shared";
 import { RoomError, RoomStore } from "../src/rooms/roomStore.js";
 import { AiHostDirector } from "../src/host/aiHostDirector.js";
 import { CannedHostBrain } from "../src/host/cannedBrain.js";
 import { buildSystemPrompt } from "../src/host/prompt.js";
-import { PERSONAS } from "../src/host/personas.js";
+import { PERSONAS } from "../src/host/personas/index.js";
 import { createSocketServer } from "../src/realtime/socketServer.js";
 import { loadConfig } from "../src/config/env.js";
 
@@ -134,13 +134,34 @@ describe("AI host in the chat", () => {
     const { store, roomId, bob, ann, said, step, room } = withDirector();
     store.postPlayerChat(roomId, bob, "lol nice one ann");
     await step();
-    expect(said).toHaveLength(0);
+    // The host is live in the lobby: a welcome, then one line for the two arrivals; the side chat gets no reply.
+    expect(said).toHaveLength(2);
+    const intro = said.length;
 
     store.postPlayerChat(roomId, ann, "host, how do I steal?");
     await step();
-    expect(said).toHaveLength(1);
-    expect(said[0].text).toMatch(/steal/i); // the rules answer
-    expect(room().chat.at(-1)).toMatchObject({ from: "HOST", text: said[0].text });
+    expect(said).toHaveLength(intro + 1);
+    expect(said.at(-1)!.text).toMatch(/steal/i); // the rules answer
+    expect(room().chat.at(-1)).toMatchObject({ from: "HOST", text: said.at(-1)!.text });
+  });
+
+  it("jokes about an exit, and a walkout that empties a team ends the game with one sign-off", async () => {
+    const { store, roomId, ann, amy, bob, said, step, room } = withDirector();
+    await step();
+    const before = said.length;
+    store.leaveRoom(roomId, amy);
+    await step();
+    expect(said).toHaveLength(before + 1);
+    expect(said.at(-1)!.text).toContain("Amy");
+
+    store.lockTeams(roomId, ann);
+    await step();
+    const midGame = said.length;
+    store.leaveRoom(roomId, bob); // team-2 is now empty
+    await step();
+    expect(room().phase).toBe("GAME_RESULT");
+    expect(said).toHaveLength(midGame + 1); // the forfeit sign-off covers the exit; no second joke
+    expect(said.at(-1)!.eventType).toBe("GAME_COMPLETE");
   });
 
   it("puts game moments ahead of chat, and keeps chatting while a team plays the board", async () => {
@@ -214,5 +235,28 @@ describe("mic audio signaling (real sockets)", () => {
 
     expect(received).toEqual([{ peerId: created.playerId, direction: "toListener", signal }]);
     expect(eveGot).toEqual([]);
+  });
+
+  it("leaving updates everyone else's room, and a human host leaving sends everyone home", async () => {
+    const { client, emit } = await start();
+    const ann = client();
+    const bob = client();
+    const created = await emit<{ roomCode: string; playerId: string }>(ann, "ROOM_CREATE", { displayName: "Ann", hostMode: "AI" });
+    const bobJoin = await emit<{ playerId: string }>(bob, "ROOM_JOIN", { roomCode: created.roomCode, displayName: "Bob" });
+    let annRoom: RoomSession | null = null;
+    ann.on("ROOM_UPDATED", ({ room }: { room: RoomSession }) => (annRoom = room));
+    expect(await emit(bob, "ROOM_LEAVE", {})).toEqual({ ok: true });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(annRoom!.players[bobJoin.playerId]).toBeUndefined();
+    expect(await emit(bob, "CHAT_SEND", { text: "still here?" })).toMatchObject({ code: "NOT_IN_ROOM" });
+
+    const host = client();
+    const pat = client();
+    const human = await emit<{ roomCode: string }>(host, "ROOM_CREATE", { displayName: "Host" });
+    await emit(pat, "ROOM_JOIN", { roomCode: human.roomCode, displayName: "Pat" });
+    const closed = new Promise<{ reason: string }>((r) => pat.once("ROOM_CLOSED", r));
+    await emit(host, "ROOM_LEAVE", {});
+    expect((await closed).reason).toMatch(/host left/i);
+    expect(await emit(pat, "CHAT_SEND", { text: "hello?" })).toMatchObject({ code: "NOT_IN_ROOM" });
   });
 });

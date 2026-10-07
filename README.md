@@ -66,7 +66,7 @@ npm test
 ## AI Host mode
 
 When creating a room, pick **AI host** (and a humor style: Family friendly, Sassy, Millennial,
-or Gen Z — each a complete personality, defined in `apps/server/src/host/personas.ts`). The room creator then plays on a team like everyone else and manages the lobby, and
+or Gen Z — each a complete personality, one file each in `apps/server/src/host/personas/`). The room creator then plays on a team like everyone else and manages the lobby, and
 an AI agent on the server runs the whole game: it starts questions, reads them out, judges
 every answer, calls strikes, breaks face-off stalemates, moves between rounds, ends the game,
 and supplies the jokes. Its lines appear in a speech bubble and are read aloud by the
@@ -87,12 +87,18 @@ browser's built-in voice (players can mute it).
 - **Steal huddle:** after three strikes the stealing team gets a private huddle (20s, `STEAL_TIMER_SECONDS`)
   with a team-only chat and a "Discussion is done" button. The server delivers huddle messages to that
   team only, and their mic audio and transcripts stay inside the team while they confer.
+- **Live from the lobby:** the host greets the room creator as soon as the room opens, welcomes each
+  arrival, and riffs on team renames and shuffles, all in the chosen persona's voice.
+- **Exit:** every screen has an Exit button with an are-you-sure dialog. The host jokes about the exit
+  (never the person). A face-off answerer who leaves counts as a miss, the captaincy and room ownership
+  pass on, a team left empty ends the game by forfeit, and a human host leaving closes the room.
 - **Pictures:** players can upload a photo or take a selfie in the lobby. It's shrunk to a small
   thumbnail in the browser, kept only in server memory, and deleted with the room.
 - **No key / slow model:** a built-in canned host (rule-based judging on the answer matcher,
-  joke banks per humor style) runs the game on its own, and covers any moment where the model
-  times out (`LLM_TIMEOUT_MS`), errors, or doesn't make a required move. The game never stalls
-  waiting on the AI.
+  joke banks per humor style in `cannedBrain.ts`) runs the game on its own. With a key it's only
+  a last resort: if Claude times out (`LLM_TIMEOUT_MS`), errors, or doesn't make a required move,
+  Claude gets a second try, and the canned host steps in only if that fails too. The game never
+  stalls waiting on the AI.
 
 ## Ephemeral data
 
